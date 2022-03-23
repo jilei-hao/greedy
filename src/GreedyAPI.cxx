@@ -3115,6 +3115,8 @@ int GreedyApproach<VDim, TReal>
   Image4DPointer img4d = ReadImageViaCache<Image4DType>(param.propagation_param.img4d);
   //img4d->Print(std::cout);
 
+  std::map<unsigned int, Image3DPointer> ImageMap;
+
   auto nt = img4d->GetBufferedRegion().GetSize()[3];
 
   // Validate reference tp and target tps
@@ -3122,11 +3124,16 @@ int GreedyApproach<VDim, TReal>
     throw GreedyException("Reference time point %d is greater than total number of time points %d",
                           prop_param.refTP, nt);
 
-  for (int tp : prop_param.targetTPs)
+  ImageMap[prop_param.refTP] = ExtractTimePointImage(img4d, prop_param.refTP);
+
+  // Extract 3D Images
+  for (size_t tp : prop_param.targetTPs)
     {
     if (tp > nt)
       throw GreedyException("Target time point %d is greater than total number of time points %d",
                             tp, nt);
+
+    ImageMap[tp] = ExtractTimePointImage(img4d, tp);
     }
 
   // Read Segmentation pairs
@@ -3139,6 +3146,18 @@ int GreedyApproach<VDim, TReal>
     //segref.Print(std::cout);
     }
 
+  // Debug: write out extracted tp images
+
+  /*
+  auto dbgout = segpair[0].outsegdir;
+  for (auto kv : ImageMap)
+    {
+    std::string filename = "img_"+std::to_string(kv.first)+".nii.gz";
+    auto fn = itksys::SystemTools::JoinPath(std::vector<std::string>{dbgout, filename});
+    WriteImageViaCache<Image3DType>(kv.second, fn);
+    }
+  */
+
   return 0;
 }
 
@@ -3149,6 +3168,9 @@ GreedyApproach<VDim, TReal>
 {
   // Logic adapated from SNAP ImageWrapper method:
   // ConfigureTimePointImageFromImage4D()
+  // Always use 1-based index for time point
+  assert(tp > 0);
+  printf("-- Extracting tp=%d \n", tp);
 
   unsigned int nt = img4d->GetBufferedRegion().GetSize()[3u];
   unsigned int bytes_per_volume = img4d->GetPixelContainer()->Size() / nt;
@@ -3179,8 +3201,10 @@ GreedyApproach<VDim, TReal>
 
   // Set the buffer pointer
   img3d->GetPixelContainer()->SetImportPointer(
-        img4d->GetBufferPointer() + bytes_per_volume * tp,
+        img4d->GetBufferPointer() + bytes_per_volume * (tp - 1),
         bytes_per_volume);
+
+  //img3d->Print(std::cout);
 
   return img3d;
 }
