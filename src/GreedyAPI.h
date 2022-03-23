@@ -1,4 +1,4 @@
-/*=========================================================================
+﻿/*=========================================================================
 
   Program:   ALFABIS fast medical image registration programs
   Language:  C++
@@ -106,6 +106,8 @@ public:
   int RunJacobian(GreedyParameters &param);
   
   int RunMetric(GreedyParameters &param);
+
+  int RunPropagation(GreedyParameters &param);
 
   int ComputeMetric(GreedyParameters &param, MultiComponentMetricReport &metric_report);
 
@@ -300,6 +302,16 @@ protected:
 
   ImagePointer ResampleMaskToReferenceSpaceIfNeeded(
       ImageType *mask, ImageBaseType *ref_space, VectorImageType *resample_warp);
+
+  // Typedefs for exporting 3D time points from 4D image
+  // This is needed for propagation
+  typedef itk::Image<TReal, 4u> Image4DType;
+  typedef typename Image4DType::Pointer Image4DPointer;
+  typedef itk::Image<TReal, 3u> Image3DType;
+  typedef typename Image3DType::Pointer Image3DPointer;
+
+  // Extract 3D image from given time point of the 4D Image
+  static Image3DPointer ExtractTimePointImage(Image4DType *img4d, unsigned int tp);
 
   // friend class PureAffineCostFunction<VDim, TReal>;
 

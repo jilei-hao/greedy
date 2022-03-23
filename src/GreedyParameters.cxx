@@ -403,6 +403,52 @@ bool GreedyParameters::ParseCommandLine(const std::string &cmd, CommandLineHelpe
     {
     this->lbfgs_param.memory = cl.read_integer();
     }
+  else if(cmd == "-sp")
+    {
+    // enter the propagation mode
+    this->mode = PROPAGATION;
+    }
+  else if(cmd == "-spi")
+    {
+    // propagation mode: read input 4D image
+    this->propagation_param.img4d = cl.read_existing_filename();
+    }
+  else if(cmd == "-sps")
+    {
+    // propagation mode: add a segmentation pair
+    PropagationSegSpec segspec;
+    segspec.refseg = cl.read_existing_filename();
+    segspec.outsegdir = cl.read_output_dir();
+    this->propagation_param.segpair.push_back(segspec);
+    }
+  else if(cmd == "-spm")
+    {
+    // propagation mode: add mesh pair
+    PropagationMeshSpec meshspec;
+    meshspec.refmesh = cl.read_existing_filename();
+    meshspec.outmeshdir = cl.read_output_dir();
+    this->propagation_param.meshpair.push_back(meshspec);
+    }
+  else if(cmd == "-spr")
+    {
+    // propagation mode: read reference time point number
+    this->propagation_param.refTP = cl.read_integer();
+    }
+  else if(cmd == "-spt")
+    {
+    // propagation mode: read target timepoint number string
+    std::vector<int> result = cl.read_int_vector(',');
+    // eliminate any duplicate input
+    std::set<int> unique(result.begin(), result.end());
+    // validate and push to the parameter
+    for (int n : unique)
+      {
+      if (n <= 0)
+        throw GreedyException("%d is not a valid time point value!", n);
+
+      this->propagation_param.targetTPs.push_back(n);
+      }
+    }
   else
     {
     return false;

@@ -3102,6 +3102,89 @@ int GreedyApproach<VDim, TReal>
   return 0;
 }
 
+template <unsigned int VDim, typename TReal>
+int GreedyApproach<VDim, TReal>
+::RunPropagation(GreedyParameters &param)
+{
+  printf("[Run Propagation] Started \n");
+
+  GreedyPropagationParameters prop_param = param.propagation_param;
+
+  // Read Image 4D
+
+  Image4DPointer img4d = ReadImageViaCache<Image4DType>(param.propagation_param.img4d);
+  //img4d->Print(std::cout);
+
+  auto nt = img4d->GetBufferedRegion().GetSize()[3];
+
+  // Validate reference tp and target tps
+  if (prop_param.refTP > nt)
+    throw GreedyException("Reference time point %d is greater than total number of time points %d",
+                          prop_param.refTP, nt);
+
+  for (int tp : prop_param.targetTPs)
+    {
+    if (tp > nt)
+      throw GreedyException("Target time point %d is greater than total number of time points %d",
+                            tp, nt);
+    }
+
+  // Read Segmentation pairs
+  auto &segpair = param.propagation_param.segpair;
+  for (auto it = segpair.begin(); it != segpair.end(); ++it)
+    {
+    printf("-- reading seg input: %s \n", it->refseg.c_str());
+    printf("---- outdir: %s \n", it->outsegdir.c_str());
+    Image3DPointer segref = ReadImageViaCache<Image3DType>(it->refseg);
+    //segref.Print(std::cout);
+    }
+
+  return 0;
+}
+
+template <unsigned int VDim, typename TReal>
+typename GreedyApproach<VDim, TReal>::Image3DPointer
+GreedyApproach<VDim, TReal>
+::ExtractTimePointImage(Image4DType *img4d, unsigned int tp)
+{
+  // Logic adapated from SNAP ImageWrapper method:
+  // ConfigureTimePointImageFromImage4D()
+
+  unsigned int nt = img4d->GetBufferedRegion().GetSize()[3u];
+  unsigned int bytes_per_volume = img4d->GetPixelContainer()->Size() / nt;
+
+  Image3DPointer img3d = Image3DType::New();
+
+  typename Image3DType::RegionType region;
+  typename Image3DType::SpacingType spacing;
+  typename Image3DType::PointType origin;
+  typename Image3DType::DirectionType dir;
+  for(unsigned int j = 0; j < 3; j++)
+    {
+    region.SetSize(j, img4d->GetBufferedRegion().GetSize()[j]);
+    region.SetIndex(j, img4d->GetBufferedRegion().GetIndex()[j]);
+    spacing[j] = img4d->GetSpacing()[j];
+    origin[j] = img4d->GetOrigin()[j];
+    for(unsigned int k = 0; k < 3; k++)
+      dir(j,k) = img4d->GetDirection()(j,k);
+    }
+
+  // All of the information from the 4D image is propagaged to the 3D timepoints
+  img3d->SetRegions(region);
+  img3d->SetSpacing(spacing);
+  img3d->SetOrigin(origin);
+  img3d->SetDirection(dir);
+  img3d->SetNumberOfComponentsPerPixel(img4d->GetNumberOfComponentsPerPixel());
+  img3d->Allocate();
+
+  // Set the buffer pointer
+  img3d->GetPixelContainer()->SetImportPointer(
+        img4d->GetBufferPointer() + bytes_per_volume * tp,
+        bytes_per_volume);
+
+  return img3d;
+}
+
 
 
 template <unsigned int VDim, typename TReal>
@@ -3189,6 +3272,8 @@ int GreedyApproach<VDim, TReal>
       return Self::RunRootWarp(param);
     case GreedyParameters::METRIC:
       return Self::RunMetric(param);
+    case GreedyParameters::PROPAGATION:
+      return Self::RunPropagation(param);
     }
 
   return -1;

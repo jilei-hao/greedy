@@ -124,6 +124,18 @@ struct TransformSpec
     : filename(in_filename), exponent(in_exponent) {}
 };
 
+struct PropagationSegSpec
+{
+  std::string refseg;
+  std::string outsegdir;
+};
+
+struct PropagationMeshSpec
+{
+  std::string refmesh;
+  std::string outmeshdir;
+};
+
 enum AffineInitMode
 {
   VOX_IDENTITY = 0, // Identity mapping in voxel space
@@ -177,6 +189,16 @@ struct LBFGSParameters
 {
   double ftol = 0.0, gtol = 0.0;
   int memory = 0;
+};
+
+// Parameters for the segmentation propagation
+struct GreedyPropagationParameters
+{
+  std::string img4d;
+  std::vector<PropagationSegSpec> segpair;
+  std::vector<PropagationMeshSpec> meshpair;
+  unsigned int refTP;
+  std::vector<unsigned int> targetTPs;
 };
 
 template <class TAtomic>
@@ -277,7 +299,7 @@ struct GreedyParameters
 {
   enum MetricType { SSD = 0, NCC, WNCC, MI, NMI, MAHALANOBIS };
   enum TimeStepMode { CONSTANT=0, SCALE, SCALEDOWN };
-  enum Mode { GREEDY=0, AFFINE, BRUTE, RESLICE, INVERT_WARP, ROOT_WARP, JACOBIAN_WARP, MOMENTS, METRIC };
+  enum Mode { GREEDY=0, AFFINE, BRUTE, RESLICE, INVERT_WARP, ROOT_WARP, JACOBIAN_WARP, MOMENTS, METRIC, PROPAGATION };
   enum AffineDOF { DOF_RIGID=6, DOF_SIMILARITY=7, DOF_AFFINE=12 };
   enum Verbosity { VERB_NONE=0, VERB_DEFAULT, VERB_VERBOSE, VERB_INVALID };
 
@@ -310,6 +332,9 @@ struct GreedyParameters
 
   // Root warp parameters
   GreedyWarpRootParameters warproot_param;
+
+  // Propagation parameters
+  GreedyPropagationParameters propagation_param;
 
   // Registration mode
   Mode mode = GREEDY;
