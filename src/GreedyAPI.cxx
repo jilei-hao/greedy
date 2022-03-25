@@ -43,6 +43,10 @@
 #include <itkTimeProbe.h>
 #include <itkImageFileWriter.h>
 #include <itkCastImageFilter.h>
+#include <itkDiscreteGaussianImageFilter.h>
+#include <itkResampleImageFilter.h>
+#include <itkIdentityTransform.h>
+#include <itkLinearInterpolateImageFunction.h>
 
 #include "MultiImageRegistrationHelper.h"
 #include "FastWarpCompositeImageFilter.h"
@@ -3110,8 +3114,10 @@ int GreedyApproach<VDim, TReal>
 
   GreedyPropagationParameters prop_param = param.propagation_param;
 
-  // Read Image 4D
+  //   Preparation
+  // ------------------------------------------
 
+  // Read Image 4D
   Image4DPointer img4d = ReadImageViaCache<Image4DType>(param.propagation_param.img4d);
   //img4d->Print(std::cout);
 
@@ -3146,17 +3152,46 @@ int GreedyApproach<VDim, TReal>
     //segref.Print(std::cout);
     }
 
-  // Debug: write out extracted tp images
-
-  /*
-  auto dbgout = segpair[0].outsegdir;
+  // Down sample the images for forward and backward propagation
+  std::map<unsigned int, Image3DPointer> DSImageMap;
   for (auto kv : ImageMap)
     {
-    std::string filename = "img_"+std::to_string(kv.first)+".nii.gz";
+    std::cout << "-- resample image tp=" << kv.first << std::endl;
+    DSImageMap[kv.first] = Resample3DImage(kv.second, 0.5, InterpolationMode::Linear, 1);
+    }
+
+  //
+
+
+  /*
+  // Debug: write out extracted tp images
+  auto dbgout = segpair[0].outsegdir;
+  for (auto kv : DSImageMap)
+    {
+    std::string filename = "img_"+std::to_string(kv.first)+"_srs.nii.gz";
     auto fn = itksys::SystemTools::JoinPath(std::vector<std::string>{dbgout, filename});
     WriteImageViaCache<Image3DType>(kv.second, fn);
     }
   */
+
+  // ------------------------------------------
+  //   Forward and Backward Propagation
+  // ------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+  // ------------------------------------------
+  //   Full Resolution Propagation
+  // ------------------------------------------
 
   return 0;
 }
@@ -3208,6 +3243,86 @@ GreedyApproach<VDim, TReal>
 
   return img3d;
 }
+
+template <unsigned int VDim, typename TReal>
+typename GreedyApproach<VDim, TReal>::Image3DPointer
+GreedyApproach<VDim, TReal>
+::Resample3DImage(Image3DType* input, double factor,
+                  InterpolationMode intpMode, double smooth_stdev)
+{
+  typedef itk::DiscreteGaussianImageFilter<Image3DType,Image3DType> SmoothFilter;
+  typename Image3DType::Pointer imageToResample = input;
+
+  // Smooth image if needed
+  if (smooth_stdev > 0)
+    {
+    typename SmoothFilter::Pointer fltDSSmooth = SmoothFilter::New();
+    typename SmoothFilter::ArrayType variance;
+    for (int i = 0; i < 3; ++i)
+      variance[i] = smooth_stdev * smooth_stdev;
+
+    fltDSSmooth->SetInput(input);
+    fltDSSmooth->SetVariance(variance);
+    fltDSSmooth->UseImageSpacingOn();
+    fltDSSmooth->Update();
+    imageToResample = fltDSSmooth->GetOutput();
+    }
+
+  // Create resampled images
+  typedef itk::ResampleImageFilter<Image3DType, Image3DType> ResampleFilter;
+  typedef itk::LinearInterpolateImageFunction<Image3DType, double> LinearInterpolator;
+  typedef itk::NearestNeighborInterpolateImageFunction<Image3DType, double> NNInterpolator;
+
+  typename ResampleFilter::Pointer fltResample = ResampleFilter::New();
+  fltResample->SetInput(imageToResample);
+  fltResample->SetTransform(itk::IdentityTransform<double, 3u>::New());
+
+  switch (intpMode)
+    {
+    case InterpolationMode::Linear:
+      fltResample->SetInterpolator(LinearInterpolator::New());
+      break;
+    case InterpolationMode::NearestNeighbor:
+      fltResample->SetInterpolator(NNInterpolator::New());
+      break;
+    default:
+      throw GreedyException("Unkown Interpolation Mode");
+    }
+
+  typename Image3DType::SizeType sz;
+  for(size_t i = 0; i < 3; i++)
+    sz[i] = (unsigned long)(imageToResample->GetBufferedRegion().GetSize(i) * factor + 0.5);
+
+  // Compute the spacing of the new image
+  typename Image3DType::SpacingType spc_pre = imageToResample->GetSpacing();
+  typename Image3DType::SpacingType spc_post = spc_pre;
+  for(size_t i = 0; i < VDim; i++)
+    spc_post[i] *= imageToResample->GetBufferedRegion().GetSize()[i] * 1.0 / sz[i];
+
+  // Get the bounding box of the input image
+  typename Image3DType::PointType origin_pre = imageToResample->GetOrigin();
+
+  // Recalculate the origin. The origin describes the center of voxel 0,0,0
+  // so that as the voxel size changes, the origin will change as well.
+  typename Image3DType::SpacingType off_pre = (imageToResample->GetDirection() * spc_pre) * 0.5;
+  typename Image3DType::SpacingType off_post = (imageToResample->GetDirection() * spc_post) * 0.5;
+  typename Image3DType::PointType origin_post = origin_pre - off_pre + off_post;
+
+  // Set the image sizes and spacing.
+  fltResample->SetSize(sz);
+  fltResample->SetOutputSpacing(spc_post);
+  fltResample->SetOutputOrigin(origin_post);
+  fltResample->SetOutputDirection(imageToResample->GetDirection());
+
+  // Set the unknown intensity to positive value
+  fltResample->SetDefaultPixelValue(0);
+
+  // Perform resampling
+  fltResample->UpdateLargestPossibleRegion();
+
+  return fltResample->GetOutput();
+}
+
 
 
 

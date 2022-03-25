@@ -313,6 +313,13 @@ protected:
   // Extract 3D image from given time point of the 4D Image
   static Image3DPointer ExtractTimePointImage(Image4DType *img4d, unsigned int tp);
 
+  // Interpolation method for resampleing
+  enum InterpolationMode { Linear=0, NearestNeighbor };
+
+  // Resample a 3D image
+  static Image3DPointer Resample3DImage(Image3DType* input, double factor,
+                                        InterpolationMode intpMode, double smooth_stdev = 0);
+
   // friend class PureAffineCostFunction<VDim, TReal>;
 
 };
