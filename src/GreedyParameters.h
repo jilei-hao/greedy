@@ -126,7 +126,14 @@ struct TransformSpec
 
 struct PropagationSegSpec
 {
+  // Input reference segmentation
   std::string refseg;
+
+  // Generated dilated and downsampled segmentation
+  std::string ds_refseg;
+
+  // Output directory for the propagated segmentation images
+  // for this SegSpec
   std::string outsegdir;
 };
 

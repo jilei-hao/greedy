@@ -47,6 +47,8 @@
 #include <itkResampleImageFilter.h>
 #include <itkIdentityTransform.h>
 #include <itkLinearInterpolateImageFunction.h>
+#include <itkBinaryBallStructuringElement.h>
+#include <itkBinaryDilateImageFilter.h>
 
 #include "MultiImageRegistrationHelper.h"
 #include "FastWarpCompositeImageFilter.h"
@@ -75,7 +77,7 @@ public:
   : m_Verbosity(verbosity), m_Output(f_out ? f_out : stdout)
   {
   }
-  
+
   void printf(const char *format, ...)
   {
     if(m_Verbosity > GreedyParameters::VERB_NONE)
@@ -85,24 +87,24 @@ public:
       va_start (args, format);
       vsprintf (buffer,format, args);
       va_end (args);
-      
+
       fprintf(m_Output, "%s", buffer);
       }
   }
-  
+
   void flush()
   {
     fflush(m_Output);
   }
-  
+
 private:
   GreedyParameters::Verbosity m_Verbosity;
   FILE *m_Output;
-  
+
 };
 
 
-// Helper function to get the RAS coordinate of the center of 
+// Helper function to get the RAS coordinate of the center of
 // an image
 template <unsigned int VDim>
 vnl_vector<double>
@@ -1223,7 +1225,7 @@ int GreedyApproach<VDim, TReal>
 
   // Create an optical flow helper object
   OFHelperType of_helper;
-  
+
   // Object for text output
   GreedyStdOut gout(param.verbosity);
 
@@ -1301,7 +1303,7 @@ int GreedyApproach<VDim, TReal>
         {
         // Set up the optimizer
         vnl_lbfgs *optimizer = new vnl_lbfgs(*acf);
-        
+
         // Using defaults from scipy
         double ftol = (param.lbfgs_param.ftol == 0.0) ? 2.220446049250313e-9 : param.lbfgs_param.ftol;
         double gtol = (param.lbfgs_param.gtol == 0.0) ? 1e-05 : param.lbfgs_param.gtol;
@@ -1623,7 +1625,7 @@ int GreedyApproach<VDim, TReal>
 {
   // Create an optical flow helper object
   OFHelperType of_helper;
-  
+
   // Object for text output
   GreedyStdOut gout(param.verbosity);
 
@@ -1690,7 +1692,7 @@ int GreedyApproach<VDim, TReal>
     // A pointer to the full warp image - either uk in greedy mode, or uk_exp in diff demons mdoe
     VectorImageType *uFull;
 
-    // Matrix work image (for Lie Bracket) 
+    // Matrix work image (for Lie Bracket)
     typedef typename LDDMMType::MatrixImageType MatrixImageType;
     typename MatrixImageType::Pointer work_mat = MatrixImageType::New();
 
@@ -1829,7 +1831,7 @@ int GreedyApproach<VDim, TReal>
         // Vercauteren (2008) suggests using the following expressions
         // v' = v + u (so-so)
         // v' = v + u + [v, u]/2 (this is the Lie bracket)
-        
+
         // Scale the update by 1 / 2^exponent (tiny update, first order approximation)
         LDDMMType::vimg_scale_in_place(viTemp, 1.0 / (2 << param.warp_exponent));
 
@@ -1838,7 +1840,7 @@ int GreedyApproach<VDim, TReal>
           {
           // Use the Lie Bracket approximation (v + u + [v,u])
           LDDMMType::lie_bracket(uk, viTemp, work_mat, uk1);
-          LDDMMType::vimg_scale_in_place(uk1, 0.5); 
+          LDDMMType::vimg_scale_in_place(uk1, 0.5);
           LDDMMType::vimg_add_in_place(uk1, uk);
           LDDMMType::vimg_add_in_place(uk1, viTemp);
           }
@@ -1928,7 +1930,7 @@ int GreedyApproach<VDim, TReal>
       std::string iter_line = this->PrintIter(level, -1, metric_report);
       gout.printf("%s\n", iter_line.c_str());
       gout.flush();
-      
+
       // Print timing information
       double n_it = param.iter_per_level[level];
       double t_total = tm_Iteration.GetTotal() / n_it;
@@ -2277,7 +2279,7 @@ void GreedyApproach<VDim, TReal>
         double absexp = fabs(tran_chain[i].exponent);
         double n_real = log(absexp) / log(2.0);
         int n = (int) (n_real + 0.5);
-        if(fabs(n - n_real) > 1.0e-4) 
+        if(fabs(n - n_real) > 1.0e-4)
           throw GreedyException("Currently only power of two exponents are supported for warps");
 
         // Bring the transform into voxel space
@@ -3097,12 +3099,12 @@ int GreedyApproach<VDim, TReal>
 {
   MultiComponentMetricReport metric_report;
   this->ComputeMetric(param, metric_report);
-  
+
   printf("Metric Report:\n");
   for (unsigned i = 0; i < metric_report.ComponentPerPixelMetrics.size(); i++)
     printf("  Component %d: %8.6f", i, metric_report.ComponentPerPixelMetrics[i]);
   printf("  Total = %8.6f\n", metric_report.TotalPerPixelMetric);
-	
+
   return 0;
 }
 
@@ -3112,65 +3114,86 @@ int GreedyApproach<VDim, TReal>
 {
   printf("[Run Propagation] Started \n");
 
+  PropagationData<TReal> pData;
+
   GreedyPropagationParameters prop_param = param.propagation_param;
 
+  // ------------------------------------------
   //   Preparation
   // ------------------------------------------
 
   // Read Image 4D
-  Image4DPointer img4d = ReadImageViaCache<Image4DType>(param.propagation_param.img4d);
+  pData.img4d = ReadImageViaCache<Image4DType>(param.propagation_param.img4d);
   //img4d->Print(std::cout);
 
-  std::map<unsigned int, Image3DPointer> ImageMap;
-
-  auto nt = img4d->GetBufferedRegion().GetSize()[3];
+  auto nt = pData.img4d->GetBufferedRegion().GetSize()[3];
 
   // Validate reference tp and target tps
   if (prop_param.refTP > nt)
     throw GreedyException("Reference time point %d is greater than total number of time points %d",
                           prop_param.refTP, nt);
 
-  ImageMap[prop_param.refTP] = ExtractTimePointImage(img4d, prop_param.refTP);
+  pData.tp_data[prop_param.refTP].img = ExtractTimePointImage(pData.img4d, prop_param.refTP);
 
   // Extract 3D Images
   for (size_t tp : prop_param.targetTPs)
     {
+    TimePointData<TReal> tpData;
+
     if (tp > nt)
       throw GreedyException("Target time point %d is greater than total number of time points %d",
                             tp, nt);
 
-    ImageMap[tp] = ExtractTimePointImage(img4d, tp);
+    tpData.img = ExtractTimePointImage(pData.img4d, tp);
+    tpData.img_srs = Resample3DImage(tpData.img, 0.5, InterpolationMode::Linear, 1);
+
+    pData.tp_data[tp] = tpData;
     }
 
   // Read Segmentation pairs
-  auto &segpair = param.propagation_param.segpair;
-  for (auto it = segpair.begin(); it != segpair.end(); ++it)
+  for (auto it : param.propagation_param.segpair)
     {
-    printf("-- reading seg input: %s \n", it->refseg.c_str());
-    printf("---- outdir: %s \n", it->outsegdir.c_str());
-    Image3DPointer segref = ReadImageViaCache<Image3DType>(it->refseg);
-    //segref.Print(std::cout);
+    PropagationSegGroup<TReal> segGroup;
+    segGroup.seg_ref = ReadImageViaCache<Image3DType>(it.refseg);
+    segGroup.outdir = it.outsegdir;
+
+    // Thresholding
+    typedef itk::BinaryThresholdImageFilter<Image3DType, Image3DType> ThresholdFilter;
+    typename ThresholdFilter::Pointer fltThreshold = ThresholdFilter::New();
+    fltThreshold->SetInput(segGroup.seg_ref);
+    fltThreshold->SetLowerThreshold(1);
+    fltThreshold->SetUpperThreshold(vnl_huge_val(0.0)); // +inf
+    fltThreshold->SetInsideValue(1);
+    fltThreshold->SetOutsideValue(0);
+    fltThreshold->Update();
+
+    // Label dilation
+    typedef itk::BinaryBallStructuringElement<TReal, 3u> Element;
+    typename Element::SizeType sz = { 10, 10, 10 };
+    Element elt;
+    elt.SetRadius(sz);
+    elt.CreateStructuringElement();
+
+    typedef itk::BinaryDilateImageFilter<Image3DType, Image3DType, Element> DilateFilter;
+    typename DilateFilter::Pointer fltDilation = DilateFilter::New();
+    fltDilation->SetInput(fltThreshold->GetOutput());
+    fltDilation->SetDilateValue(1);
+    fltDilation->SetKernel(elt);
+    fltDilation->Update();
+
+    // Resampling
+    segGroup.seg_ref_srs =
+        Resample3DImage(fltDilation->GetOutput(), 0.5, InterpolationMode::NearestNeighbor);
+
+    pData.seg_list.push_back(segGroup);
     }
-
-  // Down sample the images for forward and backward propagation
-  std::map<unsigned int, Image3DPointer> DSImageMap;
-  for (auto kv : ImageMap)
-    {
-    std::cout << "-- resample image tp=" << kv.first << std::endl;
-    DSImageMap[kv.first] = Resample3DImage(kv.second, 0.5, InterpolationMode::Linear, 1);
-    }
-
-  //
-
 
   /*
   // Debug: write out extracted tp images
-  auto dbgout = segpair[0].outsegdir;
-  for (auto kv : DSImageMap)
+  for (auto it : pData.seg_list)
     {
-    std::string filename = "img_"+std::to_string(kv.first)+"_srs.nii.gz";
-    auto fn = itksys::SystemTools::JoinPath(std::vector<std::string>{dbgout, filename});
-    WriteImageViaCache<Image3DType>(kv.second, fn);
+    auto dbgout = it.outdir + '/' + "seg_ref_srs.nii.gz";
+    WriteImageViaCache<Image3DType>(it.seg_ref_srs, dbgout);
     }
   */
 
@@ -3178,6 +3201,7 @@ int GreedyApproach<VDim, TReal>
   //   Forward and Backward Propagation
   // ------------------------------------------
 
+  // Forward Affine
 
 
 
@@ -3194,6 +3218,15 @@ int GreedyApproach<VDim, TReal>
   // ------------------------------------------
 
   return 0;
+}
+
+template <unsigned int VDim, typename TReal>
+void
+GreedyApproach<VDim, TReal>
+::RunPropagationAffine(GreedyParameters &glparam, PropagationData<TReal> &pData
+                                   ,unsigned int tp_prev, unsigned int tp_crnt)
+{
+
 }
 
 template <unsigned int VDim, typename TReal>
@@ -3323,9 +3356,6 @@ GreedyApproach<VDim, TReal>
   return fltResample->GetOutput();
 }
 
-
-
-
 template <unsigned int VDim, typename TReal>
 void GreedyApproach<VDim, TReal>
 ::AddCachedInputObject(std::string key, itk::Object *object)
@@ -3371,7 +3401,7 @@ void GreedyApproach<VDim, TReal>
 ::ConfigThreads(const GreedyParameters &param)
 {
   GreedyStdOut gout(param.verbosity);
-  
+
   if(param.threads > 0)
     {
     gout.printf("Limiting the number of threads to %d\n", param.threads);

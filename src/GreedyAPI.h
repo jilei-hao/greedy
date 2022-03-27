@@ -46,6 +46,54 @@ namespace itk {
 
 class vtkPolyData;
 
+template <typename TReal>
+struct PropagationSegGroup
+{
+  typedef itk::Image<TReal, 4u> Image4DType;
+  typedef typename Image4DType::Pointer Image4DPointer;
+  typedef itk::Image<TReal, 3u> Image3DType;
+  typedef typename Image3DType::Pointer Image3DPointer;
+
+  Image3DPointer seg_ref;
+  Image3DPointer seg_ref_srs;
+  std::string outdir;
+};
+
+struct PropagationMeshGroup
+{
+
+};
+
+template <typename TReal>
+struct TimePointData
+{
+  typedef itk::Image<TReal, 4u> Image4DType;
+  typedef typename Image4DType::Pointer Image4DPointer;
+  typedef itk::Image<TReal, 3u> Image3DType;
+  typedef typename Image3DType::Pointer Image3DPointer;
+
+  Image3DPointer img;
+  Image3DPointer img_srs;
+  vnl_matrix<double> affine_to_prev;
+  Image3DPointer deform_to_prev;
+  Image3DPointer deform_from_prev;
+};
+
+template <typename TReal>
+struct PropagationData
+{
+  typedef itk::Image<TReal, 4u> Image4DType;
+  typedef typename Image4DType::Pointer Image4DPointer;
+  typedef itk::Image<TReal, 3u> Image3DType;
+  typedef typename Image3DType::Pointer Image3DPointer;
+
+  Image4DPointer img4d;
+  // Only store data for current output list
+  std::map<unsigned int, TimePointData<TReal>> tp_data;
+  std::vector<PropagationSegGroup<TReal>> seg_list;
+  std::vector<PropagationMeshGroup> mesh_list;
+};
+
 /**
  * This is the top level class for the greedy software. It contains methods
  * for deformable and affine registration.
@@ -65,6 +113,12 @@ public:
   typedef typename LDDMMType::VectorImagePointer VectorImagePointer;
   typedef typename LDDMMType::CompositeImageType CompositeImageType;
   typedef typename LDDMMType::CompositeImagePointer CompositeImagePointer;
+
+  // Typedefs for propagation
+  typedef itk::Image<TReal, 4u> Image4DType;
+  typedef typename Image4DType::Pointer Image4DPointer;
+  typedef itk::Image<TReal, 3u> Image3DType;
+  typedef typename Image3DType::Pointer Image3DPointer;
 
   typedef vnl_vector_fixed<TReal, VDim> VecFx;
   typedef vnl_matrix_fixed<TReal, VDim, VDim> MatFx;
@@ -104,7 +158,7 @@ public:
   int RunAlignMoments(GreedyParameters &param);
 
   int RunJacobian(GreedyParameters &param);
-  
+
   int RunMetric(GreedyParameters &param);
 
   int RunPropagation(GreedyParameters &param);
@@ -303,13 +357,6 @@ protected:
   ImagePointer ResampleMaskToReferenceSpaceIfNeeded(
       ImageType *mask, ImageBaseType *ref_space, VectorImageType *resample_warp);
 
-  // Typedefs for exporting 3D time points from 4D image
-  // This is needed for propagation
-  typedef itk::Image<TReal, 4u> Image4DType;
-  typedef typename Image4DType::Pointer Image4DPointer;
-  typedef itk::Image<TReal, 3u> Image3DType;
-  typedef typename Image3DType::Pointer Image3DPointer;
-
   // Extract 3D image from given time point of the 4D Image
   static Image3DPointer ExtractTimePointImage(Image4DType *img4d, unsigned int tp);
 
@@ -319,6 +366,10 @@ protected:
   // Resample a 3D image
   static Image3DPointer Resample3DImage(Image3DType* input, double factor,
                                         InterpolationMode intpMode, double smooth_stdev = 0);
+
+  // Propagation affine run
+  static void RunPropagationAffine(GreedyParameters &glparam, PropagationData<TReal> &pData
+                                   ,unsigned int tp_prev, unsigned int tp_crnt);
 
   // friend class PureAffineCostFunction<VDim, TReal>;
 
