@@ -36,6 +36,7 @@
 #include <map>
 #include "itkCommand.h"
 #include <vtkSmartPointer.h>
+#include "itkMatrixOffsetTransformBase.h"
 
 template <typename T, unsigned int V> class MultiImageOpticalFlowHelper;
 
@@ -72,9 +73,18 @@ struct TimePointData
   typedef itk::Image<TReal, 3u> Image3DType;
   typedef typename Image3DType::Pointer Image3DPointer;
 
+  typedef itk::MatrixOffsetTransformBase<double, 3u, 3u> TransformType;
+
+  TimePointData()
+  {
+    affine_to_prev = TransformType::New();
+  }
+
   Image3DPointer img;
   Image3DPointer img_srs;
-  vnl_matrix<double> affine_to_prev;
+  Image3DPointer seg;
+  Image3DPointer seg_srs;
+  TransformType::Pointer affine_to_prev;
   Image3DPointer deform_to_prev;
   Image3DPointer deform_from_prev;
 };
@@ -370,6 +380,8 @@ protected:
   // Propagation affine run
   static void RunPropagationAffine(GreedyParameters &glparam, PropagationData<TReal> &pData
                                    ,unsigned int tp_prev, unsigned int tp_crnt);
+
+  // Cast Image Type to Vector Image
 
   // friend class PureAffineCostFunction<VDim, TReal>;
 

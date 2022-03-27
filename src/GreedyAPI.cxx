@@ -3114,9 +3114,11 @@ int GreedyApproach<VDim, TReal>
 {
   printf("[Run Propagation] Started \n");
 
+  // Variable stores working data for propagation
   PropagationData<TReal> pData;
 
   GreedyPropagationParameters prop_param = param.propagation_param;
+  const unsigned int refTP = prop_param.refTP;
 
   // ------------------------------------------
   //   Preparation
@@ -3129,11 +3131,11 @@ int GreedyApproach<VDim, TReal>
   auto nt = pData.img4d->GetBufferedRegion().GetSize()[3];
 
   // Validate reference tp and target tps
-  if (prop_param.refTP > nt)
+  if (refTP > nt)
     throw GreedyException("Reference time point %d is greater than total number of time points %d",
-                          prop_param.refTP, nt);
+                          refTP, nt);
 
-  pData.tp_data[prop_param.refTP].img = ExtractTimePointImage(pData.img4d, prop_param.refTP);
+  pData.tp_data[refTP].img = ExtractTimePointImage(pData.img4d, refTP);
 
   // Extract 3D Images
   for (size_t tp : prop_param.targetTPs)
@@ -3188,6 +3190,11 @@ int GreedyApproach<VDim, TReal>
     pData.seg_list.push_back(segGroup);
     }
 
+  // We only use the first reference seg to run registration
+  // -- The rest of the seg inputs only participate in warping
+  pData.tp_data[refTP].seg = pData.seg_list[0].seg_ref;
+  pData.tp_data[refTP].seg_srs = pData.seg_list[0].seg_ref_srs;
+
   /*
   // Debug: write out extracted tp images
   for (auto it : pData.seg_list)
@@ -3197,12 +3204,41 @@ int GreedyApproach<VDim, TReal>
     }
   */
 
+  // Create a tp list for forward propagation chain
+  std::vector<unsigned int> forward_tps { refTP };
+  std::vector<unsigned int> backward_tps { refTP };
+
+  for (unsigned int tp : prop_param.targetTPs)
+    {
+    if (tp < refTP )
+      backward_tps.push_back(tp);
+    else if (tp > refTP)
+      forward_tps.push_back(tp);
+    }
+
+  std::sort(forward_tps.begin(), forward_tps.end());
+  std::sort(backward_tps.rbegin(), backward_tps.rend());
+
+  std::cout << "forward tps: ";
+  for (auto tp : forward_tps)
+    std::cout << " " << tp;
+  std::cout << std::endl;
+  std::cout << "backward tps: ";
+  for (auto tp : backward_tps)
+    std::cout << " " << tp;
+  std::cout << std::endl;
+
   // ------------------------------------------
   //   Forward and Backward Propagation
   // ------------------------------------------
 
-  // Forward Affine
 
+  for (int i = 1; i < forward_tps.size(); ++i)
+    {
+    const auto crntTP = forward_tps[i];
+    const auto prevTP = forward_tps[i - 1];
+    RunPropagationAffine(param, pData, prevTP, crntTP);
+    }
 
 
 
@@ -3220,12 +3256,72 @@ int GreedyApproach<VDim, TReal>
   return 0;
 }
 
+
+
 template <unsigned int VDim, typename TReal>
 void
 GreedyApproach<VDim, TReal>
 ::RunPropagationAffine(GreedyParameters &glparam, PropagationData<TReal> &pData
                                    ,unsigned int tp_prev, unsigned int tp_crnt)
 {
+  /*
+   * greedy -d 3 -a -ia-identity -dof 6 -s 3mm 1.5mm -i {Dm} {Dn} -gm {DSm} -o [A:n-m]
+   */
+
+  typedef TimePointData<TReal> TPDataType;
+
+  // Get relevant tp data
+  TPDataType &tpdata_ref = pData.tp_data[glparam.propagation_param.refTP];
+  TPDataType &tpdata_prev = pData.tp_data[tp_prev];
+  TPDataType &tpdata_crnt = pData.tp_data[tp_crnt];
+
+  // Set greedy parameters
+  GreedyParameters param;
+  GreedyApproach<3u, TReal> *GreedyAPI = new GreedyApproach<3u, TReal>();
+
+  // Set input images
+  GreedyInputGroup ig;
+  ImagePairSpec ip;
+  ip.weight = 1.0;
+  ip.fixed = "img_fixed";
+  ip.moving = "img_moving";
+  ig.inputs.push_back(ip);
+
+  GreedyAPI->AddCachedInputObject(ip.fixed, tpdata_prev.img_srs);
+  GreedyAPI->AddCachedInputObject(ip.moving, tpdata_crnt.img_srs);
+
+  // Set mask images
+  ig.fixed_mask = "mask_fixed";
+  GreedyAPI->AddCachedInputObject(ig.fixed_mask, tpdata_prev.seg_srs);
+
+  param.metric = glparam.metric;
+  param.metric_radius = glparam.metric_radius;
+  param.affine_dof = glparam.affine_dof;
+  param.iter_per_level = glparam.iter_per_level;
+  param.affine_init_mode = AffineInitMode::RAS_IDENTITY;
+
+  // Check smoothing parameters. If greedy default detected, change to propagation default.
+  SmoothingParameters default_pre = { 1.7320508076, false }, prop_default_pre = { 3.0, true };
+  SmoothingParameters default_post = { 0.7071067812, false }, prop_default_post = { 1.5, true };
+  param.sigma_pre = (glparam.sigma_pre == default_pre) ? prop_default_pre : glparam.sigma_pre;
+  param.sigma_post = (glparam.sigma_post == default_post) ? prop_default_post : glparam.sigma_post;
+
+  // Add the input group to the parameters
+  //  GreedyParameters may create an empty input group during contruction
+  //  Remove the defaultly constructed group, replace it with ig
+  if (param.input_groups.size() > 0)
+    param.input_groups.clear();
+
+  param.input_groups.push_back(ig);
+
+  // Configure output
+  param.output = "affine_to_prev";
+  GreedyAPI->AddCachedInputObject(param.output, tpdata_crnt.affine_to_prev);
+
+  GreedyAPI->RunAffine(param);
+
+  std::cout << "-- Affine Completed" << std::endl;
+  tpdata_crnt.affine_to_prev.Print(std::cout);
 
 }
 

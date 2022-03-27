@@ -58,6 +58,10 @@ struct SmoothingParameters
   bool operator != (const SmoothingParameters &other) {
     return sigma != other.sigma || physical_units != other.physical_units;
   }
+
+  bool operator == (const SmoothingParameters &other) {
+    return sigma == other.sigma && physical_units == other.physical_units;
+  }
 };
 
 enum RigidSearchRotationMode
