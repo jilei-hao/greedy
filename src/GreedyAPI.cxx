@@ -50,6 +50,8 @@
 #include <itkBinaryBallStructuringElement.h>
 #include <itkBinaryDilateImageFilter.h>
 
+#include "ImageRegionConstIteratorWithIndexOverride.h"
+
 #include "MultiImageRegistrationHelper.h"
 #include "FastWarpCompositeImageFilter.h"
 #include "MultiComponentImageMetricBase.h"
@@ -3108,6 +3110,150 @@ int GreedyApproach<VDim, TReal>
   return 0;
 }
 
+class LinearIntensityMapping
+{
+public:
+  typedef LinearIntensityMapping Self;
+
+  double operator() (double g) const
+    { return MapInternalToNative(g); }
+
+  double MapInternalToNative(double internal) const
+    { return internal * scale + shift; }
+
+  double MapNativeToInternal(double native) const
+    { return (native - shift) / scale; }
+
+  LinearIntensityMapping() : scale(1.0), shift(0.0) {}
+  LinearIntensityMapping(double a, double b) : scale(a), shift(b) {}
+
+  bool operator != (const Self &other) const
+    { return scale != other.scale || shift != other.shift; }
+
+protected:
+  double scale;
+  double shift;
+};
+
+class IdentityIntensityMapping
+{
+public:
+  typedef IdentityIntensityMapping Self;
+
+  double operator() (double g) const
+    { return g; }
+
+  double MapInternalToNative(double internal) const
+    { return internal; }
+
+  double MapNativeToInternal(double native) const
+    { return native; }
+
+  bool operator != (const Self &other) const { return false; }
+};
+
+
+template <class TInputImage, class TOutputImage, class TFunctor>
+class UnaryFunctorImageToSingleComponentVectorImageFilter
+    : public itk::ImageToImageFilter<TInputImage, TOutputImage>
+{
+public:
+  typedef UnaryFunctorImageToSingleComponentVectorImageFilter<TInputImage, TOutputImage, TFunctor> Self;
+  typedef itk::ImageToImageFilter<TInputImage, TOutputImage> Superclass;
+  typedef itk::SmartPointer<Self> Pointer;
+  typedef itk::SmartPointer< const Self >  ConstPointer;
+
+  typedef TInputImage InputImageType;
+  typedef TOutputImage OutputImageType;
+  typedef TFunctor FunctorType;
+
+  typedef typename Superclass::OutputImageRegionType OutputImageRegionType;
+
+  /** Run-time type information (and related methods). */
+  itkTypeMacro(UnaryFunctorImageToSingleComponentVectorImageFilter, ImageToImageFilter)
+  itkNewMacro(Self)
+
+  /** ImageDimension constants */
+  itkStaticConstMacro(InputImageDimension, unsigned int,
+                      TInputImage::ImageDimension);
+  itkStaticConstMacro(OutputImageDimension, unsigned int,
+                      TOutputImage::ImageDimension);
+
+  void SetFunctor(const FunctorType &functor)
+  {
+    if(m_Functor != functor)
+      {
+      m_Functor = functor;
+      this->Modified();
+      }
+  }
+
+  itkGetConstReferenceMacro(Functor, FunctorType)
+
+  void DynamicThreadedGenerateData(const OutputImageRegionType & outputRegionForThread) ITK_OVERRIDE;
+
+
+protected:
+
+  UnaryFunctorImageToSingleComponentVectorImageFilter() {}
+  virtual ~UnaryFunctorImageToSingleComponentVectorImageFilter() {}
+
+  FunctorType m_Functor;
+
+};
+
+template <class TInputImage, class TOutputImage, class TFunctor>
+void
+UnaryFunctorImageToSingleComponentVectorImageFilter<TInputImage, TOutputImage, TFunctor>
+::DynamicThreadedGenerateData(const OutputImageRegionType &outputRegionForThread)
+{
+  // Use our fast iterators for vector images
+  typedef itk::ImageLinearIteratorWithIndex<OutputImageType> IterBase;
+  typedef IteratorExtender<IterBase> IterType;
+
+  typedef typename OutputImageType::InternalPixelType OutputComponentType;
+  typedef typename InputImageType::InternalPixelType InputComponentType;
+
+  // Define the iterators
+  IterType outputIt(this->GetOutput(), outputRegionForThread);
+  int line_len = outputRegionForThread.GetSize(0);
+
+  // Using a generic ITK iterator for the input because it supports RLE images and adaptors
+  itk::ImageScanlineConstIterator< InputImageType > inputIt(this->GetInput(), outputRegionForThread);
+
+  while ( !inputIt.IsAtEnd() )
+    {
+    // Get the pointer to the input and output pixel lines
+    OutputComponentType *out = outputIt.GetPixelPointer(this->GetOutput());
+
+    for(int i = 0; i < line_len; i++, ++inputIt)
+      {
+      out[i] = m_Functor(inputIt.Get());
+      }
+
+    outputIt.NextLine();
+    inputIt.NextLine();
+    }
+}
+
+template <class TInputImage, class TIntensityMapping, typename TReal>
+static typename itk::VectorImage<TReal, 3>::Pointer
+CastToVectorImage (TInputImage *input)
+{
+  typedef UnaryFunctorImageToSingleComponentVectorImageFilter<
+      TInputImage, itk::VectorImage<TReal, 3>, TIntensityMapping> FilterType;
+  typedef itk::ImageSource<itk::VectorImage<TReal, 3>> VectorImageSource;
+
+  TIntensityMapping intensityMapping;
+  itk::SmartPointer<FilterType> filter = FilterType::New();
+  filter->SetInput(input);
+  filter->SetFunctor(intensityMapping);
+  itk::SmartPointer<VectorImageSource> imgSource = filter.GetPointer();
+  imgSource->UpdateOutputInformation();
+  imgSource->Update();
+  return imgSource->GetOutput();
+}
+
 template <unsigned int VDim, typename TReal>
 int GreedyApproach<VDim, TReal>
 ::RunPropagation(GreedyParameters &param)
@@ -3126,7 +3272,8 @@ int GreedyApproach<VDim, TReal>
 
   // Read Image 4D
   pData.img4d = ReadImageViaCache<Image4DType>(param.propagation_param.img4d);
-  //img4d->Print(std::cout);
+
+  typename Image4DType::DirectionType img4d_dir = pData.img4d->GetDirection();
 
   auto nt = pData.img4d->GetBufferedRegion().GetSize()[3];
 
@@ -3136,6 +3283,8 @@ int GreedyApproach<VDim, TReal>
                           refTP, nt);
 
   pData.tp_data[refTP].img = ExtractTimePointImage(pData.img4d, refTP);
+  pData.tp_data[refTP].img_srs = Resample3DImage(pData.tp_data[refTP].img,
+                                                 0.5, InterpolationMode::Linear, 1);
 
   // Extract 3D Images
   for (size_t tp : prop_param.targetTPs)
@@ -3152,12 +3301,25 @@ int GreedyApproach<VDim, TReal>
     pData.tp_data[tp] = tpData;
     }
 
+  typename Image3DType::DirectionType img_direction, seg_direction;
+  img_direction = pData.tp_data[refTP].img->GetDirection();
+
   // Read Segmentation pairs
   for (auto it : param.propagation_param.segpair)
     {
+    std::cout << "Processing reference segmentation: " << it.refseg << std::endl;
+
     PropagationSegGroup<TReal> segGroup;
     segGroup.seg_ref = ReadImageViaCache<Image3DType>(it.refseg);
     segGroup.outdir = it.outsegdir;
+
+    seg_direction = segGroup.seg_ref->GetDirection();
+
+    if (img_direction != seg_direction)
+      {
+      throw GreedyException("Image and Segmentation orientations do not match. Segmentation file %s",
+                            it.refseg.c_str());
+      }
 
     // Thresholding
     typedef itk::BinaryThresholdImageFilter<Image3DType, Image3DType> ThresholdFilter;
@@ -3226,27 +3388,19 @@ int GreedyApproach<VDim, TReal>
   std::cout << "backward tps: ";
   for (auto tp : backward_tps)
     std::cout << " " << tp;
-  std::cout << std::endl;
+  std::cout << std::endl << std::flush;
 
   // ------------------------------------------
   //   Forward and Backward Propagation
   // ------------------------------------------
 
 
-  for (int i = 1; i < forward_tps.size(); ++i)
+  for (size_t i = 1; i < forward_tps.size(); ++i)
     {
     const auto crntTP = forward_tps[i];
     const auto prevTP = forward_tps[i - 1];
     RunPropagationAffine(param, pData, prevTP, crntTP);
     }
-
-
-
-
-
-
-
-
 
 
   // ------------------------------------------
@@ -3268,6 +3422,9 @@ GreedyApproach<VDim, TReal>
    * greedy -d 3 -a -ia-identity -dof 6 -s 3mm 1.5mm -i {Dm} {Dn} -gm {DSm} -o [A:n-m]
    */
 
+  std::cout << "[RunPropaAffine] Started prev=" << tp_prev << "; crnt="
+            << tp_crnt << std::endl;
+
   typedef TimePointData<TReal> TPDataType;
 
   // Get relevant tp data
@@ -3287,8 +3444,13 @@ GreedyApproach<VDim, TReal>
   ip.moving = "img_moving";
   ig.inputs.push_back(ip);
 
-  GreedyAPI->AddCachedInputObject(ip.fixed, tpdata_prev.img_srs);
-  GreedyAPI->AddCachedInputObject(ip.moving, tpdata_crnt.img_srs);
+  auto casted_fix = CastToVectorImage<Image3DType, LinearIntensityMapping, TReal>(
+        tpdata_prev.img_srs);
+  auto casted_mov = CastToVectorImage<Image3DType, LinearIntensityMapping, TReal>(
+        tpdata_crnt.img_srs);
+
+  GreedyAPI->AddCachedInputObject(ip.fixed, casted_fix);
+  GreedyAPI->AddCachedInputObject(ip.moving, casted_mov);
 
   // Set mask images
   ig.fixed_mask = "mask_fixed";
@@ -3296,7 +3458,7 @@ GreedyApproach<VDim, TReal>
 
   param.metric = glparam.metric;
   param.metric_radius = glparam.metric_radius;
-  param.affine_dof = glparam.affine_dof;
+  param.affine_dof = GreedyParameters::DOF_RIGID;
   param.iter_per_level = glparam.iter_per_level;
   param.affine_init_mode = AffineInitMode::RAS_IDENTITY;
 
@@ -3318,10 +3480,11 @@ GreedyApproach<VDim, TReal>
   param.output = "affine_to_prev";
   GreedyAPI->AddCachedInputObject(param.output, tpdata_crnt.affine_to_prev);
 
-  GreedyAPI->RunAffine(param);
+  int ret = GreedyAPI->RunAffine(param);
 
-  std::cout << "-- Affine Completed" << std::endl;
-  tpdata_crnt.affine_to_prev.Print(std::cout);
+
+  std::cout << "-- Affine Completed. ret=" << ret << std::endl;
+  //tpdata_crnt.affine_to_prev.Print(std::cout);
 
 }
 
