@@ -72,6 +72,10 @@ struct TimePointData
   typedef typename Image4DType::Pointer Image4DPointer;
   typedef itk::Image<TReal, 3u> Image3DType;
   typedef typename Image3DType::Pointer Image3DPointer;
+  typedef LDDMMData<TReal, 3u> LDDMM3DType;
+  typedef typename LDDMM3DType::VectorImageType VectorImage3DType;
+  typedef typename VectorImage3DType::Pointer VectorImage3DPointer;
+
 
   typedef itk::MatrixOffsetTransformBase<double, 3u, 3u> TransformType;
 
@@ -85,8 +89,8 @@ struct TimePointData
   Image3DPointer seg;
   Image3DPointer seg_srs;
   TransformType::Pointer affine_to_prev;
-  Image3DPointer deform_to_prev;
-  Image3DPointer deform_from_prev;
+  VectorImage3DPointer deform_to_prev;
+  VectorImage3DPointer deform_from_prev;
 };
 
 template <typename TReal>
@@ -94,8 +98,6 @@ struct PropagationData
 {
   typedef itk::Image<TReal, 4u> Image4DType;
   typedef typename Image4DType::Pointer Image4DPointer;
-  typedef itk::Image<TReal, 3u> Image3DType;
-  typedef typename Image3DType::Pointer Image3DPointer;
 
   Image4DPointer img4d;
   // Only store data for current output list
@@ -379,6 +381,10 @@ protected:
 
   // Propagation affine run
   static void RunPropagationAffine(GreedyParameters &glparam, PropagationData<TReal> &pData
+                                   ,unsigned int tp_prev, unsigned int tp_crnt);
+
+  // Propagation deform run
+  static void RunPropagationDeformable(GreedyParameters &glparam, PropagationData<TReal> &pData
                                    ,unsigned int tp_prev, unsigned int tp_crnt);
 
   // Cast Image Type to Vector Image

@@ -3400,6 +3400,7 @@ int GreedyApproach<VDim, TReal>
     const auto crntTP = forward_tps[i];
     const auto prevTP = forward_tps[i - 1];
     RunPropagationAffine(param, pData, prevTP, crntTP);
+    RunPropagationDeformable(param, pData, prevTP, crntTP);
     }
 
 
@@ -3428,7 +3429,6 @@ GreedyApproach<VDim, TReal>
   typedef TimePointData<TReal> TPDataType;
 
   // Get relevant tp data
-  TPDataType &tpdata_ref = pData.tp_data[glparam.propagation_param.refTP];
   TPDataType &tpdata_prev = pData.tp_data[tp_prev];
   TPDataType &tpdata_crnt = pData.tp_data[tp_crnt];
 
@@ -3478,13 +3478,104 @@ GreedyApproach<VDim, TReal>
 
   // Configure output
   param.output = "affine_to_prev";
-  GreedyAPI->AddCachedInputObject(param.output, tpdata_crnt.affine_to_prev);
+  GreedyAPI->AddCachedOutputObject(param.output, tpdata_crnt.affine_to_prev);
 
   int ret = GreedyAPI->RunAffine(param);
 
+  delete GreedyAPI;
 
   std::cout << "-- Affine Completed. ret=" << ret << std::endl;
   //tpdata_crnt.affine_to_prev.Print(std::cout);
+}
+
+template <unsigned int VDim, typename TReal>
+void
+GreedyApproach<VDim, TReal>
+::RunPropagationDeformable(GreedyParameters &glparam, PropagationData<TReal> &pData
+                                   ,unsigned int tp_prev, unsigned int tp_crnt)
+{
+  /*
+   * greedy -d 3 -m <MET> -n <MRS> -threads <THR>
+   * -s 3mm 1.5mm -it [A:n-m]
+   * -i {Dm} {Dn}
+   * -gm {DSm}
+   * -o [D:n-m] -oinv [D:m-n]
+  */
+
+  std::cout << "[RunPropaDeformable] Started prev=" << tp_prev << "; crnt="
+            << tp_crnt << std::endl;
+
+  typedef TimePointData<TReal> TPDataType;
+
+  // Get relevant tp data
+  TPDataType &tpdata_prev = pData.tp_data[tp_prev];
+  TPDataType &tpdata_crnt = pData.tp_data[tp_crnt];
+
+  // Set greedy parameters
+  GreedyParameters param;
+  GreedyApproach<3u, TReal> *GreedyAPI = new GreedyApproach<3u, TReal>();
+
+  // Set input images
+  GreedyInputGroup ig;
+  ImagePairSpec ip;
+  ip.weight = 1.0;
+  ip.fixed = "img_fixed";
+  ip.moving = "img_moving";
+  ig.inputs.push_back(ip);
+
+  auto casted_fix = CastToVectorImage<Image3DType, LinearIntensityMapping, TReal>(
+        tpdata_prev.img_srs);
+  auto casted_mov = CastToVectorImage<Image3DType, LinearIntensityMapping, TReal>(
+        tpdata_crnt.img_srs);
+
+  GreedyAPI->AddCachedInputObject(ip.fixed, casted_fix);
+  GreedyAPI->AddCachedInputObject(ip.moving, casted_mov);
+
+  // Set mask images
+  ig.fixed_mask = "mask_fixed";
+  GreedyAPI->AddCachedInputObject(ig.fixed_mask, tpdata_prev.seg_srs);
+
+  param.metric = glparam.metric;
+  param.metric_radius = glparam.metric_radius;
+  param.iter_per_level = glparam.iter_per_level;
+
+  // Check smoothing parameters. If greedy default detected, change to propagation default.
+  SmoothingParameters default_pre = { 1.7320508076, false }, prop_default_pre = { 3.0, true };
+  SmoothingParameters default_post = { 0.7071067812, false }, prop_default_post = { 1.5, true };
+  param.sigma_pre = (glparam.sigma_pre == default_pre) ? prop_default_pre : glparam.sigma_pre;
+  param.sigma_post = (glparam.sigma_post == default_post) ? prop_default_post : glparam.sigma_post;
+
+  // Add the input group to the parameters
+  //  GreedyParameters may create an empty input group during contruction
+  //  Remove the defaultly constructed group, replace it with ig
+  if (param.input_groups.size() > 0)
+    param.input_groups.clear();
+
+  param.input_groups.push_back(ig);
+
+  // Configure output
+  typedef LDDMMData<TReal, 3> LDDMM3DType;
+
+  param.output = "deform_to_prev";
+  tpdata_crnt.deform_to_prev = LDDMM3DType::new_vimg(tpdata_crnt.img_srs);
+  GreedyAPI->AddCachedOutputObject(param.output, tpdata_crnt.deform_to_prev);
+
+
+  param.inverse_warp = "deform_from_prev";
+  tpdata_crnt.deform_from_prev = LDDMM3DType::new_vimg(tpdata_crnt.img_srs);
+  GreedyAPI->AddCachedOutputObject(param.inverse_warp, tpdata_crnt.deform_from_prev);
+
+  int ret = GreedyAPI->RunDeformable(param);
+
+  std::cout << "-- Deformable Completed: ret=" << ret << std::endl;
+
+  std::cout << "-- deform to prev: " << std::endl;
+  tpdata_crnt.deform_to_prev->Print(std::cout);
+
+  std::cout << "-- deform from prev: " << std::endl;
+  tpdata_crnt.deform_from_prev->Print(std::cout);
+
+  delete GreedyAPI;
 
 }
 
