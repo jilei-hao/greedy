@@ -37,6 +37,7 @@
 #include "itkCommand.h"
 #include <vtkSmartPointer.h>
 #include "itkMatrixOffsetTransformBase.h"
+#include "itkImageRegionIterator.h"
 
 template <typename T, unsigned int V> class MultiImageOpticalFlowHelper;
 
@@ -54,15 +55,32 @@ struct PropagationSegGroup
   typedef typename Image4DType::Pointer Image4DPointer;
   typedef itk::Image<TReal, 3u> Image3DType;
   typedef typename Image3DType::Pointer Image3DPointer;
+  typedef itk::Image<short, 3u> LabelImageType;
+  typedef typename LabelImageType::Pointer LabelImagePointer;
 
-  Image3DPointer seg_ref;
-  Image3DPointer seg_ref_srs;
+  LabelImagePointer seg_ref;
+  LabelImagePointer seg_ref_srs;
   std::string outdir;
 };
 
 struct PropagationMeshGroup
 {
 
+};
+
+template <typename TReal>
+struct TimePointTransformSpec
+{
+  typedef itk::MatrixOffsetTransformBase<double, 3u, 3u> TransformType;
+  typedef LDDMMData<TReal, 3u> LDDMM3DType;
+  typedef typename LDDMM3DType::VectorImageType VectorImage3DType;
+  typedef typename VectorImage3DType::Pointer VectorImage3DPointer;
+
+  TimePointTransformSpec(TransformType::Pointer _affine, VectorImage3DPointer _deform)
+    : affine(_affine), deform (_deform) {}
+
+  TransformType::Pointer affine;
+  VectorImage3DPointer deform;
 };
 
 template <typename TReal>
@@ -75,6 +93,8 @@ struct TimePointData
   typedef LDDMMData<TReal, 3u> LDDMM3DType;
   typedef typename LDDMM3DType::VectorImageType VectorImage3DType;
   typedef typename VectorImage3DType::Pointer VectorImage3DPointer;
+  typedef itk::Image<short, 3u> LabelImageType;
+  typedef typename LabelImageType::Pointer LabelImagePointer;
 
 
   typedef itk::MatrixOffsetTransformBase<double, 3u, 3u> TransformType;
@@ -84,13 +104,41 @@ struct TimePointData
     affine_to_prev = TransformType::New();
   }
 
+  // This method is to convert label image to double image
+  // so the the image can be read as fixed mask
+  static Image3DPointer CastLabelToDoubleImage(LabelImageType *input)
+  {
+    auto output = Image3DType::New();
+    output->SetRegions(input->GetLargestPossibleRegion());
+    output->SetDirection(input->GetDirection());
+    output->SetOrigin(input->GetOrigin());
+    output->SetSpacing(input->GetSpacing());
+    output->Allocate();
+
+    itk::ImageRegionIterator<LabelImageType> it_input(
+          input, input->GetLargestPossibleRegion());
+    itk::ImageRegionIterator<Image3DType> it_output(
+          output, output->GetLargestPossibleRegion());
+
+    // Deep copy pixels
+    while (!it_input.IsAtEnd())
+      {
+      it_output.Set(it_input.Get());
+      ++it_output;
+      ++it_input;
+      }
+
+    return output;
+  }
+
   Image3DPointer img;
   Image3DPointer img_srs;
-  Image3DPointer seg;
-  Image3DPointer seg_srs;
+  LabelImagePointer seg;
+  LabelImagePointer seg_srs;
   TransformType::Pointer affine_to_prev;
   VectorImage3DPointer deform_to_prev;
   VectorImage3DPointer deform_from_prev;
+  std::vector<TimePointTransformSpec<TReal>> transform_specs;
 };
 
 template <typename TReal>
@@ -131,6 +179,8 @@ public:
   typedef typename Image4DType::Pointer Image4DPointer;
   typedef itk::Image<TReal, 3u> Image3DType;
   typedef typename Image3DType::Pointer Image3DPointer;
+  typedef itk::Image<short, 3u> LabelImageType;
+  typedef typename LabelImageType::Pointer LabelImagePointer;
 
   typedef vnl_vector_fixed<TReal, VDim> VecFx;
   typedef vnl_matrix_fixed<TReal, VDim, VDim> MatFx;
@@ -372,13 +422,6 @@ protected:
   // Extract 3D image from given time point of the 4D Image
   static Image3DPointer ExtractTimePointImage(Image4DType *img4d, unsigned int tp);
 
-  // Interpolation method for resampleing
-  enum InterpolationMode { Linear=0, NearestNeighbor };
-
-  // Resample a 3D image
-  static Image3DPointer Resample3DImage(Image3DType* input, double factor,
-                                        InterpolationMode intpMode, double smooth_stdev = 0);
-
   // Propagation affine run
   static void RunPropagationAffine(GreedyParameters &glparam, PropagationData<TReal> &pData
                                    ,unsigned int tp_prev, unsigned int tp_crnt);
@@ -387,7 +430,10 @@ protected:
   static void RunPropagationDeformable(GreedyParameters &glparam, PropagationData<TReal> &pData
                                    ,unsigned int tp_prev, unsigned int tp_crnt);
 
-  // Cast Image Type to Vector Image
+  // Propagation reslice run
+  static void RunPropagationReslice(GreedyParameters &glparam, PropagationData<TReal> &pData
+                                   ,unsigned int tp_prev, unsigned int tp_crnt);
+
 
   // friend class PureAffineCostFunction<VDim, TReal>;
 

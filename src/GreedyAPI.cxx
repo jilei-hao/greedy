@@ -3254,6 +3254,99 @@ CastToVectorImage (TInputImage *input)
   return imgSource->GetOutput();
 }
 
+// Interpolation method for resampleing
+enum InterpolationMode { Linear=0, NearestNeighbor };
+
+template <typename TImageType>
+itk::SmartPointer<TImageType>
+Resample3DImage(TImageType* input, double factor,
+                  InterpolationMode intpMode, double smooth_stdev = 0)
+{
+  typedef itk::DiscreteGaussianImageFilter<TImageType,TImageType> SmoothFilter;
+  typename TImageType::Pointer imageToResample = input;
+
+  std::cout << "Resampling started..." << std::endl;
+
+  // Smooth image if needed
+  if (smooth_stdev > 0)
+    {
+    typename SmoothFilter::Pointer fltDSSmooth = SmoothFilter::New();
+    typename SmoothFilter::ArrayType variance;
+    for (int i = 0; i < 3; ++i)
+      variance[i] = smooth_stdev * smooth_stdev;
+
+    fltDSSmooth->SetInput(input);
+    fltDSSmooth->SetVariance(variance);
+    fltDSSmooth->UseImageSpacingOn();
+    fltDSSmooth->Update();
+    imageToResample = fltDSSmooth->GetOutput();
+    }
+
+  std::cout << "-- Smoothing Completed" << std::endl;
+
+  // Create resampled images
+  typedef itk::ResampleImageFilter<TImageType, TImageType> ResampleFilter;
+  typedef itk::LinearInterpolateImageFunction<TImageType, double> LinearInterpolator;
+  typedef itk::NearestNeighborInterpolateImageFunction<TImageType, double> NNInterpolator;
+
+  typename ResampleFilter::Pointer fltResample = ResampleFilter::New();
+  fltResample->SetInput(imageToResample);
+  fltResample->SetTransform(itk::IdentityTransform<double, 3u>::New());
+
+  switch (intpMode)
+    {
+    case InterpolationMode::Linear:
+      fltResample->SetInterpolator(LinearInterpolator::New());
+      break;
+    case InterpolationMode::NearestNeighbor:
+      fltResample->SetInterpolator(NNInterpolator::New());
+      break;
+    default:
+      throw GreedyException("Unkown Interpolation Mode");
+    }
+
+  std::cout << "-- Interpolator Set" << std::endl;
+
+  typename TImageType::SizeType sz;
+  for(size_t i = 0; i < 3; i++)
+    sz[i] = (unsigned long)(imageToResample->GetBufferedRegion().GetSize(i) * factor + 0.5);
+
+  // Compute the spacing of the new image
+  typename TImageType::SpacingType spc_pre = imageToResample->GetSpacing();
+  typename TImageType::SpacingType spc_post = spc_pre;
+  for(size_t i = 0; i < 3; i++)
+    spc_post[i] *= imageToResample->GetBufferedRegion().GetSize()[i] * 1.0 / sz[i];
+
+  // Get the bounding box of the input image
+  typename TImageType::PointType origin_pre = imageToResample->GetOrigin();
+
+  // Recalculate the origin. The origin describes the center of voxel 0,0,0
+  // so that as the voxel size changes, the origin will change as well.
+  typename TImageType::SpacingType off_pre = (imageToResample->GetDirection() * spc_pre) * 0.5;
+  typename TImageType::SpacingType off_post = (imageToResample->GetDirection() * spc_post) * 0.5;
+  typename TImageType::PointType origin_post = origin_pre - off_pre + off_post;
+
+  std::cout << "-- Image Meta Set " << std::endl;
+
+  // Set the image sizes and spacing.
+  fltResample->SetSize(sz);
+  fltResample->SetOutputSpacing(spc_post);
+  fltResample->SetOutputOrigin(origin_post);
+  fltResample->SetOutputDirection(imageToResample->GetDirection());
+
+  // Set the unknown intensity to positive value
+  fltResample->SetDefaultPixelValue(0);
+
+  std::cout << "-- Before Update" << std::endl;
+
+  // Perform resampling
+  fltResample->UpdateLargestPossibleRegion();
+
+  std::cout << "-- After Update" << std::endl;
+
+  return fltResample->GetOutput();
+}
+
 template <unsigned int VDim, typename TReal>
 int GreedyApproach<VDim, TReal>
 ::RunPropagation(GreedyParameters &param)
@@ -3283,8 +3376,11 @@ int GreedyApproach<VDim, TReal>
                           refTP, nt);
 
   pData.tp_data[refTP].img = ExtractTimePointImage(pData.img4d, refTP);
-  pData.tp_data[refTP].img_srs = Resample3DImage(pData.tp_data[refTP].img,
-                                                 0.5, InterpolationMode::Linear, 1);
+  pData.tp_data[refTP].img_srs = Resample3DImage<Image3DType>(
+        pData.tp_data[refTP].img,0.5, InterpolationMode::Linear, 1);
+
+  std::cout << "Resample reference frame completed" << std::endl;
+  pData.tp_data[refTP].img_srs->Print(std::cout);
 
   // Extract 3D Images
   for (size_t tp : prop_param.targetTPs)
@@ -3296,7 +3392,10 @@ int GreedyApproach<VDim, TReal>
                             tp, nt);
 
     tpData.img = ExtractTimePointImage(pData.img4d, tp);
-    tpData.img_srs = Resample3DImage(tpData.img, 0.5, InterpolationMode::Linear, 1);
+    tpData.img_srs = Resample3DImage<Image3DType>(
+          tpData.img, 0.5, InterpolationMode::Linear, 1);
+
+    std::cout << "Resampling Completed" << std::endl;
 
     pData.tp_data[tp] = tpData;
     }
@@ -3310,7 +3409,7 @@ int GreedyApproach<VDim, TReal>
     std::cout << "Processing reference segmentation: " << it.refseg << std::endl;
 
     PropagationSegGroup<TReal> segGroup;
-    segGroup.seg_ref = ReadImageViaCache<Image3DType>(it.refseg);
+    segGroup.seg_ref = ReadImageViaCache<LabelImageType>(it.refseg);
     segGroup.outdir = it.outsegdir;
 
     seg_direction = segGroup.seg_ref->GetDirection();
@@ -3322,11 +3421,11 @@ int GreedyApproach<VDim, TReal>
       }
 
     // Thresholding
-    typedef itk::BinaryThresholdImageFilter<Image3DType, Image3DType> ThresholdFilter;
+    typedef itk::BinaryThresholdImageFilter<LabelImageType, LabelImageType> ThresholdFilter;
     typename ThresholdFilter::Pointer fltThreshold = ThresholdFilter::New();
     fltThreshold->SetInput(segGroup.seg_ref);
     fltThreshold->SetLowerThreshold(1);
-    fltThreshold->SetUpperThreshold(vnl_huge_val(0.0)); // +inf
+    fltThreshold->SetUpperThreshold(SHRT_MAX); // +inf
     fltThreshold->SetInsideValue(1);
     fltThreshold->SetOutsideValue(0);
     fltThreshold->Update();
@@ -3338,7 +3437,7 @@ int GreedyApproach<VDim, TReal>
     elt.SetRadius(sz);
     elt.CreateStructuringElement();
 
-    typedef itk::BinaryDilateImageFilter<Image3DType, Image3DType, Element> DilateFilter;
+    typedef itk::BinaryDilateImageFilter<LabelImageType, LabelImageType, Element> DilateFilter;
     typename DilateFilter::Pointer fltDilation = DilateFilter::New();
     fltDilation->SetInput(fltThreshold->GetOutput());
     fltDilation->SetDilateValue(1);
@@ -3347,7 +3446,8 @@ int GreedyApproach<VDim, TReal>
 
     // Resampling
     segGroup.seg_ref_srs =
-        Resample3DImage(fltDilation->GetOutput(), 0.5, InterpolationMode::NearestNeighbor);
+        Resample3DImage<LabelImageType>(
+          fltDilation->GetOutput(), 0.5, InterpolationMode::NearestNeighbor);
 
     pData.seg_list.push_back(segGroup);
     }
@@ -3399,8 +3499,34 @@ int GreedyApproach<VDim, TReal>
     {
     const auto crntTP = forward_tps[i];
     const auto prevTP = forward_tps[i - 1];
+    // Run affine to get transformation for reslicing
     RunPropagationAffine(param, pData, prevTP, crntTP);
+
+    // Run deformable to get warp image for reslicing
     RunPropagationDeformable(param, pData, prevTP, crntTP);
+
+    // Set the transformation chain
+    // -- add all <affine, -1> <deform> from reference TP to current TP
+    std::cout << "Processing transform chain..." << std::endl;
+    for (size_t j = 1; j <= i; ++j)
+      {
+      const auto ct = forward_tps[j];
+      const auto pt = forward_tps[j - 1];
+
+      std::cout << "-- Adding transform for tp=" << ct << std::endl;
+
+      auto &crnt_data = pData.tp_data[ct];
+      auto &prev_data = pData.tp_data[pt];
+      auto affine = crnt_data.affine_to_prev;
+      auto deform = crnt_data.deform_from_prev;
+      // Copy previous transform specs as a starting point
+      crnt_data.transform_specs = prev_data.transform_specs;
+      TimePointTransformSpec<TReal> spec(affine, deform);
+      crnt_data.transform_specs.push_back(spec);
+      }
+
+    // Run reslicing to warp seg_ref_srs to currrent time point
+    RunPropagationReslice(param, pData, prevTP, crntTP);
     }
 
 
@@ -3410,6 +3536,8 @@ int GreedyApproach<VDim, TReal>
 
   return 0;
 }
+
+
 
 
 
@@ -3454,7 +3582,8 @@ GreedyApproach<VDim, TReal>
 
   // Set mask images
   ig.fixed_mask = "mask_fixed";
-  GreedyAPI->AddCachedInputObject(ig.fixed_mask, tpdata_prev.seg_srs);
+  auto casted_mask = TimePointData<TReal>::CastLabelToDoubleImage(tpdata_prev.seg_srs);
+  GreedyAPI->AddCachedInputObject(ig.fixed_mask, casted_mask);
 
   param.metric = glparam.metric;
   param.metric_radius = glparam.metric_radius;
@@ -3529,7 +3658,7 @@ GreedyApproach<VDim, TReal>
         tpdata_crnt.img_srs);
 
   GreedyAPI->AddCachedInputObject(ip.fixed, casted_fix);
-  GreedyAPI->AddCachedInputObject(ip.moving, casted_mov);
+  GreedyAPI->AddCachedInputObject(ip.moving, casted_mov );
 
   // Set mask images
   ig.fixed_mask = "mask_fixed";
@@ -3568,15 +3697,95 @@ GreedyApproach<VDim, TReal>
   int ret = GreedyAPI->RunDeformable(param);
 
   std::cout << "-- Deformable Completed: ret=" << ret << std::endl;
-
-  std::cout << "-- deform to prev: " << std::endl;
-  tpdata_crnt.deform_to_prev->Print(std::cout);
-
-  std::cout << "-- deform from prev: " << std::endl;
-  tpdata_crnt.deform_from_prev->Print(std::cout);
-
   delete GreedyAPI;
 
+}
+
+
+template <unsigned int VDim, typename TReal>
+void
+GreedyApproach<VDim, TReal>
+::RunPropagationReslice(GreedyParameters &glparam, PropagationData<TReal> &pData
+                                   ,unsigned int tp_prev, unsigned int tp_crnt)
+{
+  /*
+   * greedy -d 3 -ri NN -rf {Dn} -r [W:r-n] -rm {DSr} {DSn}
+  */
+
+  std::cout << "[RunPropaReslice] Started prev=" << tp_prev << "; crnt="
+            << tp_crnt << std::endl;
+
+  typedef TimePointData<TReal> TPDataType;
+
+  // Get relevant tp data
+  TPDataType &tpdata_ref = pData.tp_data[glparam.propagation_param.refTP];
+  TPDataType &tpdata_crnt = pData.tp_data[tp_crnt];
+
+  // Set greedy parameters
+  GreedyParameters param;
+  GreedyApproach<3u, TReal> *GreedyAPI = new GreedyApproach<3u, TReal>();
+
+  // Set images
+  param.dim = 3;
+  param.reslice_param.ref_image = "img_ref";
+
+  // -- Set ref image
+  auto casted_ref = CastToVectorImage<Image3DType, LinearIntensityMapping, TReal>(
+        tpdata_crnt.img_srs);
+  GreedyAPI->AddCachedInputObject(param.reslice_param.ref_image, casted_ref.GetPointer());
+
+  // -- Set moving image
+  std::string id_mov = "img_mov", id_res = "img_res";
+
+  ResliceSpec rspec(id_mov, id_res, InterpSpec(InterpSpec::LABELWISE, 0.1));
+  param.reslice_param.images.push_back(rspec);
+
+  auto casted_mov = CastToVectorImage<LabelImageType, LinearIntensityMapping, TReal>(
+        tpdata_ref.seg_srs);
+  GreedyAPI->AddCachedInputObject(id_mov, casted_mov.GetPointer());
+
+  // -- Set output image
+  auto img_res = LabelImageType::New();
+  tpdata_crnt.seg_srs = img_res.GetPointer();
+  GreedyAPI->AddCachedOutputObject(id_res, img_res.GetPointer());
+
+
+  std::map<std::string, itk::Object*> trans_spec_map;
+
+  // Set the transformation chain
+  for (size_t i = 0; i < tpdata_crnt.transform_specs.size(); ++i)
+    {
+    auto &trans_spec = tpdata_crnt.transform_specs[i];
+
+    // -- Add affine
+    // ---- Generate a unique id
+    std::ostringstream oss;
+    oss << "trans_" << i << "affine";
+    std::string affine_id = oss.str();
+    // ---- Save to map
+    trans_spec_map[affine_id] = trans_spec.affine;
+    // ---- Push to parameter
+    param.reslice_param.transforms.push_back(TransformSpec(affine_id, -1.0));
+    // ---- Add object to API cache
+    GreedyAPI->AddCachedInputObject(affine_id, trans_spec.affine.GetPointer());
+
+    // -- Add deformable
+    // ---- Generate a unique id
+    oss.clear();
+    oss << "trans_" << i << "deform";
+    std::string deform_id = oss.str();
+    // ---- Save to map
+    trans_spec_map[deform_id] = trans_spec.deform;
+    // ---- Push to parameter
+    param.reslice_param.transforms.push_back(TransformSpec(deform_id));
+    // ---- Add object to API cache
+    GreedyAPI->AddCachedInputObject(deform_id, trans_spec.deform.GetPointer());
+    }
+
+  int ret = GreedyAPI->RunReslice(param);
+
+  std::cout << "-- Reslicing Completed: ret=" << ret << std::endl;
+  delete GreedyAPI;
 }
 
 template <unsigned int VDim, typename TReal>
@@ -3627,84 +3836,7 @@ GreedyApproach<VDim, TReal>
   return img3d;
 }
 
-template <unsigned int VDim, typename TReal>
-typename GreedyApproach<VDim, TReal>::Image3DPointer
-GreedyApproach<VDim, TReal>
-::Resample3DImage(Image3DType* input, double factor,
-                  InterpolationMode intpMode, double smooth_stdev)
-{
-  typedef itk::DiscreteGaussianImageFilter<Image3DType,Image3DType> SmoothFilter;
-  typename Image3DType::Pointer imageToResample = input;
 
-  // Smooth image if needed
-  if (smooth_stdev > 0)
-    {
-    typename SmoothFilter::Pointer fltDSSmooth = SmoothFilter::New();
-    typename SmoothFilter::ArrayType variance;
-    for (int i = 0; i < 3; ++i)
-      variance[i] = smooth_stdev * smooth_stdev;
-
-    fltDSSmooth->SetInput(input);
-    fltDSSmooth->SetVariance(variance);
-    fltDSSmooth->UseImageSpacingOn();
-    fltDSSmooth->Update();
-    imageToResample = fltDSSmooth->GetOutput();
-    }
-
-  // Create resampled images
-  typedef itk::ResampleImageFilter<Image3DType, Image3DType> ResampleFilter;
-  typedef itk::LinearInterpolateImageFunction<Image3DType, double> LinearInterpolator;
-  typedef itk::NearestNeighborInterpolateImageFunction<Image3DType, double> NNInterpolator;
-
-  typename ResampleFilter::Pointer fltResample = ResampleFilter::New();
-  fltResample->SetInput(imageToResample);
-  fltResample->SetTransform(itk::IdentityTransform<double, 3u>::New());
-
-  switch (intpMode)
-    {
-    case InterpolationMode::Linear:
-      fltResample->SetInterpolator(LinearInterpolator::New());
-      break;
-    case InterpolationMode::NearestNeighbor:
-      fltResample->SetInterpolator(NNInterpolator::New());
-      break;
-    default:
-      throw GreedyException("Unkown Interpolation Mode");
-    }
-
-  typename Image3DType::SizeType sz;
-  for(size_t i = 0; i < 3; i++)
-    sz[i] = (unsigned long)(imageToResample->GetBufferedRegion().GetSize(i) * factor + 0.5);
-
-  // Compute the spacing of the new image
-  typename Image3DType::SpacingType spc_pre = imageToResample->GetSpacing();
-  typename Image3DType::SpacingType spc_post = spc_pre;
-  for(size_t i = 0; i < VDim; i++)
-    spc_post[i] *= imageToResample->GetBufferedRegion().GetSize()[i] * 1.0 / sz[i];
-
-  // Get the bounding box of the input image
-  typename Image3DType::PointType origin_pre = imageToResample->GetOrigin();
-
-  // Recalculate the origin. The origin describes the center of voxel 0,0,0
-  // so that as the voxel size changes, the origin will change as well.
-  typename Image3DType::SpacingType off_pre = (imageToResample->GetDirection() * spc_pre) * 0.5;
-  typename Image3DType::SpacingType off_post = (imageToResample->GetDirection() * spc_post) * 0.5;
-  typename Image3DType::PointType origin_post = origin_pre - off_pre + off_post;
-
-  // Set the image sizes and spacing.
-  fltResample->SetSize(sz);
-  fltResample->SetOutputSpacing(spc_post);
-  fltResample->SetOutputOrigin(origin_post);
-  fltResample->SetOutputDirection(imageToResample->GetDirection());
-
-  // Set the unknown intensity to positive value
-  fltResample->SetDefaultPixelValue(0);
-
-  // Perform resampling
-  fltResample->UpdateLargestPossibleRegion();
-
-  return fltResample->GetOutput();
-}
 
 template <unsigned int VDim, typename TReal>
 void GreedyApproach<VDim, TReal>
