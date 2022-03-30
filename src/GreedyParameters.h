@@ -143,8 +143,14 @@ struct PropagationSegSpec
 
 struct PropagationMeshSpec
 {
+  // Input or generated reference mesh
   std::string refmesh;
-  std::string outmeshdir;
+
+  // Generated mesh from downsampled segmentation
+  std::string ds_refmesh;
+
+  // Output directory for the propagated meshes
+  std::string dirmeshout;
 };
 
 enum AffineInitMode
@@ -210,6 +216,7 @@ struct GreedyPropagationParameters
   std::vector<PropagationMeshSpec> meshpair;
   unsigned int refTP;
   std::vector<unsigned int> targetTPs;
+  InterpSpec reslice_spec;
 };
 
 template <class TAtomic>

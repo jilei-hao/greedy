@@ -79,6 +79,9 @@ struct TimePointTransformSpec
   TimePointTransformSpec(TransformType::Pointer _affine, VectorImage3DPointer _deform)
     : affine(_affine), deform (_deform) {}
 
+  TimePointTransformSpec(TransformType::Pointer _affine)
+    : affine(_affine), deform (nullptr) {}
+
   TransformType::Pointer affine;
   VectorImage3DPointer deform;
 };
@@ -95,9 +98,8 @@ struct TimePointData
   typedef typename VectorImage3DType::Pointer VectorImage3DPointer;
   typedef itk::Image<short, 3u> LabelImageType;
   typedef typename LabelImageType::Pointer LabelImagePointer;
-
-
   typedef itk::MatrixOffsetTransformBase<double, 3u, 3u> TransformType;
+  typedef vtkSmartPointer<vtkPolyData> MeshPointer;
 
   TimePointData()
   {
@@ -131,14 +133,25 @@ struct TimePointData
     return output;
   }
 
+  static LabelImagePointer ResliceLabelImageWithIdentityMatrix(
+      LabelImageType *ref, LabelImageType *src);
+
+  static MeshPointer GetMeshFromLabelImage(LabelImageType *img);
+
   Image3DPointer img;
   Image3DPointer img_srs;
   LabelImagePointer seg;
   LabelImagePointer seg_srs;
+  MeshPointer mesh;
+  MeshPointer mesh_srs;
+  LabelImagePointer full_res_mask;
   TransformType::Pointer affine_to_prev;
   VectorImage3DPointer deform_to_prev;
+  VectorImage3DPointer deform_to_ref;
   VectorImage3DPointer deform_from_prev;
+  VectorImage3DPointer deform_from_ref;
   std::vector<TimePointTransformSpec<TReal>> transform_specs;
+  std::vector<TimePointTransformSpec<TReal>> full_res_label_trans_specs;
 };
 
 template <typename TReal>
@@ -424,15 +437,15 @@ protected:
 
   // Propagation affine run
   static void RunPropagationAffine(GreedyParameters &glparam, PropagationData<TReal> &pData
-                                   ,unsigned int tp_prev, unsigned int tp_crnt);
+                                   ,unsigned int tp_fix, unsigned int tp_mov);
 
   // Propagation deform run
   static void RunPropagationDeformable(GreedyParameters &glparam, PropagationData<TReal> &pData
-                                   ,unsigned int tp_prev, unsigned int tp_crnt);
+                                   ,unsigned int tp_fix, unsigned int tp_mov, bool isFullRes = false);
 
   // Propagation reslice run
   static void RunPropagationReslice(GreedyParameters &glparam, PropagationData<TReal> &pData
-                                   ,unsigned int tp_prev, unsigned int tp_crnt);
+                                   ,unsigned int tp_mov, unsigned int tp_ref, bool isFullRes = false);
 
 
   // friend class PureAffineCostFunction<VDim, TReal>;

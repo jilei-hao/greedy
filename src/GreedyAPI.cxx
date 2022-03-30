@@ -3149,7 +3149,7 @@ public:
   double MapNativeToInternal(double native) const
     { return native; }
 
-  bool operator != (const Self &other) const { return false; }
+  bool operator != (const Self &) const { return false; }
 };
 
 
@@ -3190,7 +3190,7 @@ public:
 
   itkGetConstReferenceMacro(Functor, FunctorType)
 
-  void DynamicThreadedGenerateData(const OutputImageRegionType & outputRegionForThread) ITK_OVERRIDE;
+  void DynamicThreadedGenerateData(const OutputImageRegionType & outputRegionForThread) override;
 
 
 protected:
@@ -3333,6 +3333,141 @@ Resample3DImage(TImageType* input, double factor,
   fltResample->UpdateLargestPossibleRegion();
 
   return fltResample->GetOutput();
+}
+
+template <typename TReal>
+typename TimePointData<TReal>::LabelImagePointer
+TimePointData<TReal>
+::ResliceLabelImageWithIdentityMatrix(
+    LabelImageType *ref, LabelImageType *src)
+{
+  // Code adapted from c3d command -reslice-identity
+
+  typedef itk::AffineTransform<double, 3> TranType;
+  typename TranType::Pointer atran = TranType::New();
+  atran->SetIdentity();
+
+  // Build the resampling filter
+  typedef itk::ResampleImageFilter<LabelImageType,LabelImageType> ResampleFilterType;
+  typename ResampleFilterType::Pointer fltSample = ResampleFilterType::New();
+
+  // Initialize the resampling filter with an identity transform
+  fltSample->SetInput(src);
+  fltSample->SetTransform(atran);
+
+  // Set the unknown intensity to positive value
+  fltSample->SetDefaultPixelValue(0);
+
+  // Set the interpolator
+  typedef itk::NearestNeighborInterpolateImageFunction<LabelImageType, double> NNInterpolator;
+  fltSample->SetInterpolator(NNInterpolator::New());
+
+  // Calculate where the transform is taking things
+  itk::ContinuousIndex<double, 3> idx[3];
+  for(size_t i = 0; i < 3; i++)
+    {
+    idx[0][i] = 0.0;
+    idx[1][i] = ref->GetBufferedRegion().GetSize(i) / 2.0;
+    idx[2][i] = ref->GetBufferedRegion().GetSize(i) - 1.0;
+    }
+  for(size_t j = 0; j < 3; j++)
+    {
+    itk::ContinuousIndex<double, 3> idxmov;
+    itk::Point<double, 3> pref, pmov;
+    ref->TransformContinuousIndexToPhysicalPoint(idx[j], pref);
+    pmov = atran->TransformPoint(pref);
+    src->TransformPhysicalPointToContinuousIndex(pmov, idxmov);
+    }
+
+  // Set the spacing, origin, direction of the output
+  fltSample->UseReferenceImageOn();
+  fltSample->SetReferenceImage(ref);
+  fltSample->Update();
+
+  return fltSample->GetOutput();
+}
+
+#include "itkVTKImageExport.h"
+#include "vtkImageImport.h"
+#include "vtkAppendPolyData.h"
+#include "vtkDiscreteMarchingCubes.h"
+#include "vtkShortArray.h"
+#include "vtkPointData.h"
+
+template<class TImage>
+void ConnectITKToVTK(itk::VTKImageExport<TImage> *fltExport,vtkImageImport *fltImport)
+{
+  fltImport->SetUpdateInformationCallback( fltExport->GetUpdateInformationCallback());
+  fltImport->SetPipelineModifiedCallback( fltExport->GetPipelineModifiedCallback());
+  fltImport->SetWholeExtentCallback( fltExport->GetWholeExtentCallback());
+  fltImport->SetSpacingCallback( fltExport->GetSpacingCallback());
+  fltImport->SetOriginCallback( fltExport->GetOriginCallback());
+  fltImport->SetScalarTypeCallback( fltExport->GetScalarTypeCallback());
+  fltImport->SetNumberOfComponentsCallback( fltExport->GetNumberOfComponentsCallback());
+  fltImport->SetPropagateUpdateExtentCallback( fltExport->GetPropagateUpdateExtentCallback());
+  fltImport->SetUpdateDataCallback( fltExport->GetUpdateDataCallback());
+  fltImport->SetDataExtentCallback( fltExport->GetDataExtentCallback());
+  fltImport->SetBufferPointerCallback( fltExport->GetBufferPointerCallback());
+  fltImport->SetCallbackUserData( fltExport->GetCallbackUserData());
+}
+
+template <typename TReal>
+typename TimePointData<TReal>::MeshPointer
+TimePointData<TReal>
+::GetMeshFromLabelImage(LabelImageType *img)
+{
+  std::cout << "Generating Mesh from Label Image" << std::endl;
+
+  short imax = img->GetBufferPointer()[0];
+  short imin = imax;
+  for(size_t i = 0; i < img->GetBufferedRegion().GetNumberOfPixels(); i++)
+    {
+    short x = img->GetBufferPointer()[i];
+    imax = std::max(imax, x);
+    imin = std::min(imin, x);
+    }
+
+  typedef itk::VTKImageExport<LabelImageType> ExporterType;
+  ExporterType::Pointer fltExport = ExporterType::New();
+  fltExport->SetInput(img);
+  vtkImageImport *fltImport = vtkImageImport::New();
+  ConnectITKToVTK(fltExport.GetPointer(), fltImport);
+
+
+  // Append filter for assembling labels
+  vtkAppendPolyData *fltAppend = vtkAppendPolyData::New();
+
+  // Extracting one label at a time and assigning label value
+  for (short i = 1; i <= imax; i += 1.0)
+    {
+    std::cout << "Processing Label: " << i << std::endl;
+
+    // Extract one label
+    vtkDiscreteMarchingCubes *fltDMC = vtkDiscreteMarchingCubes::New();
+    fltDMC->SetInputConnection(fltImport->GetOutputPort());
+    fltDMC->ComputeGradientsOff();
+    fltDMC->ComputeScalarsOff();
+    fltDMC->SetNumberOfContours(1);
+    fltDMC->ComputeNormalsOn();
+    fltDMC->SetValue(0, i);
+    fltDMC->Update();
+
+    vtkPolyData *labelMesh = fltDMC->GetOutput();
+
+    // Set scalar values for the label
+    vtkShortArray *scalar = vtkShortArray::New();
+    scalar->SetNumberOfComponents(1);
+    for (vtkIdType i = 0; i < labelMesh->GetNumberOfPoints(); ++i)
+      {
+      scalar->InsertNextTuple1(i);
+      }
+    scalar->SetName("Label");
+    labelMesh->GetPointData()->SetScalars(scalar);
+    fltAppend->AddInputData(labelMesh);
+    }
+
+  fltAppend->Update();
+  return fltAppend->GetOutput();
 }
 
 template <unsigned int VDim, typename TReal>
@@ -3493,43 +3628,70 @@ int GreedyApproach<VDim, TReal>
       // Set the transformation chain
       // -- add all <affine, -1> <deform> from reference TP to current TP
       std::cout << "Processing transform chain..." << std::endl;
-      for (size_t j = 1; j <= i; ++j)
-        {
-        const auto ct = tp_list[j];
-        const auto pt = tp_list[j - 1];
 
-        auto &crnt_data = pData.tp_data[ct];
-        auto &prev_data = pData.tp_data[pt];
-        auto affine = crnt_data.affine_to_prev;
-        auto deform = crnt_data.deform_from_prev;
-        // Copy previous transform specs as a starting point
-        crnt_data.transform_specs = prev_data.transform_specs;
-        TimePointTransformSpec<TReal> spec(affine, deform);
-        crnt_data.transform_specs.push_back(spec);
-        }
+      auto &crnt_data = pData.tp_data[crntTP];
+      auto &prev_data = pData.tp_data[prevTP];
+
+      // Copy previous transform specs as a starting point
+      crnt_data.transform_specs = prev_data.transform_specs;
+
+      // Get current transformations
+      auto affine = crnt_data.affine_to_prev;
+      auto deform = crnt_data.deform_from_prev;
+
+      // Build spec and append to existing list
+      TimePointTransformSpec<TReal> spec(affine, deform);
+      crnt_data.transform_specs.push_back(spec);
+
 
       // Run reslicing to warp seg_ref_srs to currrent time point
       RunPropagationReslice(param, pData, prevTP, crntTP);
       }
+
+
+    // Generate Full Resolution Mask for the reference segmentation
+    // c3d -interpolation NerestNeighbor {I(r)} {DS(r)} -reslice-identity -o {S'(r)}
+    std::cout << "Generating Full Resolution Reference Mask" << std::endl;
+    auto &ref_data = pData.tp_data[refTP];
+    ref_data.full_res_mask = TimePointData<TReal>::ResliceLabelImageWithIdentityMatrix(
+          ref_data.seg, ref_data.seg_srs);
+
+    std::cout << "Start Full-Res Propagation" << std::endl;
+
+    // Full Resolution Propagation
+    for (size_t i = 1; i < tp_list.size(); ++i)
+      {
+      const auto crntTP = tp_list[i];
+
+      // Run full res deformable registration
+      RunPropagationDeformable(param, pData, refTP, crntTP, true);
+
+      // Run full res reslicing to warp seg_ref to current time point
+      RunPropagationReslice(param, pData, refTP, crntTP, true);
+
+      // Save resliced image to disk
+      // -- only first seg group is processed. The rest will be resliced later
+
+      std::vector<std::string> fnout_components;
+      fnout_components.push_back(pData.seg_list[0].outdir);
+      fnout_components.push_back("seg_resliced_tp_" + std::to_string(crntTP) + ".nii.gz");
+
+      std::string fnout = itksys::SystemTools::JoinPath(fnout_components);
+
+      auto &crntdata = pData.tp_data[crntTP];
+      WriteImageViaCache<LabelImageType>(crntdata.seg, fnout);
+
+      std::cout << "Saved resliced segmenation to: " << fnout << std::endl;
+      }
+
+
     }
 
-  // ------------------------------------------
-  //   Full Resolution Propagation
-  // ------------------------------------------
-  std::sort(prop_param.targetTPs.begin(), prop_param.targetTPs.end());
 
-  std::cout << "Full Resolution Propagation Started" << std::endl;
 
-  for (unsigned int crntTP : prop_param.targetTPs)
-    {
-
-    }
 
   return 0;
 }
-
-
-
 
 
 template <unsigned int VDim, typename TReal>
@@ -3612,24 +3774,29 @@ template <unsigned int VDim, typename TReal>
 void
 GreedyApproach<VDim, TReal>
 ::RunPropagationDeformable(GreedyParameters &glparam, PropagationData<TReal> &pData
-                                   ,unsigned int tp_prev, unsigned int tp_crnt)
+                                   ,unsigned int tp_fix, unsigned int tp_mov, bool isFullRes)
 {
-  /*
+  /* Regular:
    * greedy -d 3 -m <MET> -n <MRS> -threads <THR>
    * -s 3mm 1.5mm -it [A:n-m]
    * -i {Dm} {Dn}
    * -gm {DSm}
    * -o [D:n-m] -oinv [D:m-n]
+   * Full-Res:
+   * greedy -d 3 -m <MET> -n <MRS> -threads <THR>
+   * -s 3mm 1.5mm -it [WA:r-n] -rf {R(n)}
+   * -gm {S'(r)}
+   * -i {I(n)} {I(r)}
+   * -o [DW:r-n] -oinv [DW:n-r]
   */
-
-  std::cout << "[RunPropaDeformable] Started prev=" << tp_prev << "; crnt="
-            << tp_crnt << std::endl;
+  std::cout << "Propagation Deformable Run: tp_fix=" << tp_fix
+            << "; tp_mov = " << tp_mov << "; isFullRes=" << isFullRes << std::endl;
 
   typedef TimePointData<TReal> TPDataType;
 
   // Get relevant tp data
-  TPDataType &tpdata_prev = pData.tp_data[tp_prev];
-  TPDataType &tpdata_crnt = pData.tp_data[tp_crnt];
+  TPDataType &tpdata_fix = pData.tp_data[tp_fix];
+  TPDataType &tpdata_mov = pData.tp_data[tp_mov];
 
   // Set greedy parameters
   GreedyParameters param;
@@ -3643,17 +3810,22 @@ GreedyApproach<VDim, TReal>
   ip.moving = "img_moving";
   ig.inputs.push_back(ip);
 
+
+  auto img_fix_to_cast = isFullRes ? tpdata_fix.img : tpdata_fix.img_srs;
+  auto img_mov_to_cast = isFullRes ? tpdata_mov.img : tpdata_mov.img_srs;
+
   auto casted_fix = CastToVectorImage<Image3DType, LinearIntensityMapping, TReal>(
-        tpdata_prev.img_srs);
+       img_fix_to_cast);
   auto casted_mov = CastToVectorImage<Image3DType, LinearIntensityMapping, TReal>(
-        tpdata_crnt.img_srs);
+       img_mov_to_cast);
 
   GreedyAPI->AddCachedInputObject(ip.fixed, casted_fix);
   GreedyAPI->AddCachedInputObject(ip.moving, casted_mov );
 
   // Set mask images
   ig.fixed_mask = "mask_fixed";
-  auto casted_mask = TimePointData<TReal>::CastLabelToDoubleImage(tpdata_prev.seg_srs);
+  auto mask_to_cast = isFullRes ? tpdata_fix.full_res_mask : tpdata_fix.seg_srs;
+  auto casted_mask = TimePointData<TReal>::CastLabelToDoubleImage(mask_to_cast);
   GreedyAPI->AddCachedInputObject(ig.fixed_mask, casted_mask);
 
   param.metric = glparam.metric;
@@ -3666,6 +3838,26 @@ GreedyApproach<VDim, TReal>
   param.sigma_pre = (glparam.sigma_pre == default_pre) ? prop_default_pre : glparam.sigma_pre;
   param.sigma_post = (glparam.sigma_post == default_post) ? prop_default_post : glparam.sigma_post;
 
+  // Configure initial affine transformation
+  if (isFullRes)
+    {
+    // Set the transformation chain
+    for (size_t i = 0; i < tpdata_mov.transform_specs.size(); ++i)
+      {
+      auto &trans_spec = tpdata_mov.transform_specs[i];
+
+      // -- Add affine
+      // ---- Generate a unique id
+      std::ostringstream oss;
+      oss << "trans_" << i << "affine";
+      std::string affine_id = oss.str();
+      // ---- Push to parameter
+      ig.moving_pre_transforms.push_back(TransformSpec(affine_id, -1.0));
+      // ---- Add object to API cache
+      GreedyAPI->AddCachedInputObject(affine_id, trans_spec.affine.GetPointer());
+      }
+    }
+
   // Add the input group to the parameters
   //  GreedyParameters may create an empty input group during contruction
   //  Remove the defaultly constructed group, replace it with ig
@@ -3677,41 +3869,55 @@ GreedyApproach<VDim, TReal>
   // Configure output
   typedef LDDMMData<TReal, 3> LDDMM3DType;
 
-  param.output = "deform_to_prev";
-  tpdata_crnt.deform_to_prev = LDDMM3DType::new_vimg(tpdata_crnt.img_srs);
-  GreedyAPI->AddCachedOutputObject(param.output, tpdata_crnt.deform_to_prev);
+  param.output = "deform_to_fix";
+  param.inverse_warp = "deform_from_fix";
 
+  if (isFullRes)
+    {
+    tpdata_mov.deform_to_ref = LDDMM3DType::new_vimg(tpdata_mov.img);
+    GreedyAPI->AddCachedOutputObject(param.output, tpdata_mov.deform_to_ref);
 
-  param.inverse_warp = "deform_from_prev";
-  tpdata_crnt.deform_from_prev = LDDMM3DType::new_vimg(tpdata_crnt.img_srs);
-  GreedyAPI->AddCachedOutputObject(param.inverse_warp, tpdata_crnt.deform_from_prev);
+    tpdata_mov.deform_from_ref = LDDMM3DType::new_vimg(tpdata_mov.img);
+    GreedyAPI->AddCachedOutputObject(param.inverse_warp, tpdata_mov.deform_from_ref);
+    }
+  else
+    {
+    tpdata_mov.deform_to_prev = LDDMM3DType::new_vimg(tpdata_mov.img_srs);
+    GreedyAPI->AddCachedOutputObject(param.output, tpdata_mov.deform_to_prev);
+
+    tpdata_mov.deform_from_prev = LDDMM3DType::new_vimg(tpdata_mov.img_srs);
+    GreedyAPI->AddCachedOutputObject(param.inverse_warp, tpdata_mov.deform_from_prev);
+    }
+
 
   int ret = GreedyAPI->RunDeformable(param);
 
-  std::cout << "-- Deformable Completed: ret=" << ret << std::endl;
+  std::cout << "Run Deformable completed with ret=" << ret << std::endl;
+
   delete GreedyAPI;
-
 }
-
 
 template <unsigned int VDim, typename TReal>
 void
 GreedyApproach<VDim, TReal>
 ::RunPropagationReslice(GreedyParameters &glparam, PropagationData<TReal> &pData
-                                   ,unsigned int tp_prev, unsigned int tp_crnt)
+                                   ,unsigned int tp_mov, unsigned int tp_ref, bool isFullRes)
 {
-  /*
-   * greedy -d 3 -ri NN -rf {Dn} -r [W:r-n] -rm {DSr} {DSn}
+  /* Down Sampled:
+   * greedy -d 3 -ri LABEL 0.2vox -rf {Dn} -r [W:r-n] -rm {DSr} {DSn}
+   *
+   * Full-Res:
+   * greedy -d 3 -threads <THR> -ri LABEL 0.2vox -rf {I(n)} -r [WA:r-n] [DW:r-n] -rm {S(r)} {S(n)}
   */
 
-  std::cout << "[RunPropaReslice] Started prev=" << tp_prev << "; crnt="
-            << tp_crnt << std::endl;
+  std::cout << "Propagation Reslice Run. tp_mov=" << tp_mov << "; tp_ref="
+            << tp_ref << "; isFullRes=" << isFullRes << std::endl;
 
   typedef TimePointData<TReal> TPDataType;
 
   // Get relevant tp data
-  TPDataType &tpdata_ref = pData.tp_data[glparam.propagation_param.refTP];
-  TPDataType &tpdata_crnt = pData.tp_data[tp_crnt];
+  TPDataType &tpdata_mov = pData.tp_data[glparam.propagation_param.refTP];
+  TPDataType &tpdata_ref = pData.tp_data[tp_ref];
 
   // Set greedy parameters
   GreedyParameters param;
@@ -3722,56 +3928,86 @@ GreedyApproach<VDim, TReal>
   param.reslice_param.ref_image = "img_ref";
 
   // -- Set ref image
+  auto imgref_to_cast = isFullRes ? tpdata_ref.img : tpdata_ref.img_srs;
   auto casted_ref = CastToVectorImage<Image3DType, LinearIntensityMapping, TReal>(
-        tpdata_crnt.img_srs);
+        imgref_to_cast);
   GreedyAPI->AddCachedInputObject(param.reslice_param.ref_image, casted_ref.GetPointer());
 
   // -- Set moving image
   std::string id_mov = "img_mov", id_res = "img_res";
 
-  ResliceSpec rspec(id_mov, id_res, InterpSpec(InterpSpec::LABELWISE, 0.1));
+  ResliceSpec rspec(id_mov, id_res, glparam.propagation_param.reslice_spec);
   param.reslice_param.images.push_back(rspec);
 
+  auto imgmov_to_cast = isFullRes ? tpdata_mov.seg : tpdata_mov.seg_srs;
   auto casted_mov = CastToVectorImage<LabelImageType, LinearIntensityMapping, TReal>(
-        tpdata_ref.seg_srs);
+        imgmov_to_cast);
   GreedyAPI->AddCachedInputObject(id_mov, casted_mov.GetPointer());
 
   // -- Set output image
   auto img_res = LabelImageType::New();
-  tpdata_crnt.seg_srs = img_res.GetPointer();
+  if (isFullRes)
+    tpdata_ref.seg = img_res.GetPointer();
+  else
+    tpdata_ref.seg_srs = img_res.GetPointer();
   GreedyAPI->AddCachedOutputObject(id_res, img_res.GetPointer());
 
 
   std::map<std::string, itk::Object*> trans_spec_map;
 
-  // Set the transformation chain
-  for (size_t i = 0; i < tpdata_crnt.transform_specs.size(); ++i)
+  // Prepend deformation field before all affine matrices for full-res reslice
+  if (isFullRes)
     {
-    auto &trans_spec = tpdata_crnt.transform_specs[i];
+    std::string deform_id = "trans_full_res_deform";
+
+    // Add to map
+    trans_spec_map[deform_id] = tpdata_ref.deform_from_ref;
+
+    // Push to parameter
+    param.reslice_param.transforms.push_back(TransformSpec(deform_id));
+
+    // Add object to the API Cache
+    GreedyAPI->AddCachedInputObject(deform_id, tpdata_ref.deform_from_ref.GetPointer());
+    }
+
+  // Set the transformation chain
+  for (size_t i = 0; i < tpdata_ref.transform_specs.size(); ++i)
+    {
+    auto &trans_spec = tpdata_ref.transform_specs[i];
 
     // -- Add affine
     // ---- Generate a unique id
     std::ostringstream oss;
     oss << "trans_" << i << "affine";
     std::string affine_id = oss.str();
+
     // ---- Save to map
     trans_spec_map[affine_id] = trans_spec.affine;
+
     // ---- Push to parameter
     param.reslice_param.transforms.push_back(TransformSpec(affine_id, -1.0));
+
     // ---- Add object to API cache
     GreedyAPI->AddCachedInputObject(affine_id, trans_spec.affine.GetPointer());
 
-    // -- Add deformable
-    // ---- Generate a unique id
-    oss.clear();
-    oss << "trans_" << i << "deform";
-    std::string deform_id = oss.str();
-    // ---- Save to map
-    trans_spec_map[deform_id] = trans_spec.deform;
-    // ---- Push to parameter
-    param.reslice_param.transforms.push_back(TransformSpec(deform_id));
-    // ---- Add object to API cache
-    GreedyAPI->AddCachedInputObject(deform_id, trans_spec.deform.GetPointer());
+    // Append deformation field to each affine matrix for downsampled propagation
+    if (!isFullRes)
+      {
+      // -- Add deformable
+      // ---- Generate a unique id
+      oss.clear();
+      oss << "trans_" << i << "deform";
+      std::string deform_id = oss.str();
+
+      // ---- Save to map
+      trans_spec_map[deform_id] = trans_spec.deform;
+
+      // ---- Push to parameter
+      param.reslice_param.transforms.push_back(TransformSpec(deform_id));
+
+      // ---- Add object to API cache
+      GreedyAPI->AddCachedInputObject(deform_id, trans_spec.deform.GetPointer());
+      }
     }
 
   int ret = GreedyAPI->RunReslice(param);

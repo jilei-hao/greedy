@@ -426,7 +426,7 @@ bool GreedyParameters::ParseCommandLine(const std::string &cmd, CommandLineHelpe
     // propagation mode: add mesh pair
     PropagationMeshSpec meshspec;
     meshspec.refmesh = cl.read_existing_filename();
-    meshspec.outmeshdir = cl.read_output_dir();
+    meshspec.dirmeshout = cl.read_output_dir();
     this->propagation_param.meshpair.push_back(meshspec);
     }
   else if(cmd == "-spr")
@@ -447,6 +447,31 @@ bool GreedyParameters::ParseCommandLine(const std::string &cmd, CommandLineHelpe
         throw GreedyException("%d is not a valid time point value!", n);
 
       this->propagation_param.targetTPs.push_back(n);
+      }
+    }
+  else if (cmd == "-sp-interp-spec")
+    {
+    // propagation mode: read sigmas for label reslicing interpolation mode
+    // e.g. -splabel-sigma 0.2vox will use LABEL 0.2vox interpolation mode
+    std::string mode = cl.read_string();
+    if(mode == "nn" || mode == "NN" || mode == "0")
+      {
+      this->propagation_param.reslice_spec.mode = InterpSpec::NEAREST;
+      }
+    else if(mode == "linear" || mode == "LINEAR" || mode == "1")
+      {
+      this->propagation_param.reslice_spec.mode = InterpSpec::LINEAR;
+      }
+    else if(mode == "label" || mode == "LABEL")
+      {
+      this->propagation_param.reslice_spec.mode = InterpSpec::LABELWISE;
+      this->propagation_param.reslice_spec.sigma.sigma =
+          cl.read_scalar_with_units(
+            this->propagation_param.reslice_spec.sigma.physical_units);
+      }
+    else
+      {
+      std::cerr << "Propagation interpolation spec: Unknown interpolation mode" << std::endl;
       }
     }
   else
@@ -520,6 +545,9 @@ std::string GreedyParameters::GenerateCommandLine()
       break;
     case GreedyParameters::METRIC:
       oss << " -metric";
+      break;
+    case GreedyParameters::PROPAGATION:
+      oss << " -sp";
       break;
     }
 
