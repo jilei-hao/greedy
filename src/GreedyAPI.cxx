@@ -3265,8 +3265,6 @@ Resample3DImage(TImageType* input, double factor,
   typedef itk::DiscreteGaussianImageFilter<TImageType,TImageType> SmoothFilter;
   typename TImageType::Pointer imageToResample = input;
 
-  std::cout << "Resampling started..." << std::endl;
-
   // Smooth image if needed
   if (smooth_stdev > 0)
     {
@@ -3281,8 +3279,6 @@ Resample3DImage(TImageType* input, double factor,
     fltDSSmooth->Update();
     imageToResample = fltDSSmooth->GetOutput();
     }
-
-  std::cout << "-- Smoothing Completed" << std::endl;
 
   // Create resampled images
   typedef itk::ResampleImageFilter<TImageType, TImageType> ResampleFilter;
@@ -3305,8 +3301,6 @@ Resample3DImage(TImageType* input, double factor,
       throw GreedyException("Unkown Interpolation Mode");
     }
 
-  std::cout << "-- Interpolator Set" << std::endl;
-
   typename TImageType::SizeType sz;
   for(size_t i = 0; i < 3; i++)
     sz[i] = (unsigned long)(imageToResample->GetBufferedRegion().GetSize(i) * factor + 0.5);
@@ -3326,8 +3320,6 @@ Resample3DImage(TImageType* input, double factor,
   typename TImageType::SpacingType off_post = (imageToResample->GetDirection() * spc_post) * 0.5;
   typename TImageType::PointType origin_post = origin_pre - off_pre + off_post;
 
-  std::cout << "-- Image Meta Set " << std::endl;
-
   // Set the image sizes and spacing.
   fltResample->SetSize(sz);
   fltResample->SetOutputSpacing(spc_post);
@@ -3337,12 +3329,8 @@ Resample3DImage(TImageType* input, double factor,
   // Set the unknown intensity to positive value
   fltResample->SetDefaultPixelValue(0);
 
-  std::cout << "-- Before Update" << std::endl;
-
   // Perform resampling
   fltResample->UpdateLargestPossibleRegion();
-
-  std::cout << "-- After Update" << std::endl;
 
   return fltResample->GetOutput();
 }
@@ -3351,8 +3339,6 @@ template <unsigned int VDim, typename TReal>
 int GreedyApproach<VDim, TReal>
 ::RunPropagation(GreedyParameters &param)
 {
-  printf("[Run Propagation] Started \n");
-
   // Variable stores working data for propagation
   PropagationData<TReal> pData;
 
@@ -3379,7 +3365,6 @@ int GreedyApproach<VDim, TReal>
   pData.tp_data[refTP].img_srs = Resample3DImage<Image3DType>(
         pData.tp_data[refTP].img,0.5, InterpolationMode::Linear, 1);
 
-  std::cout << "Resample reference frame completed" << std::endl;
   pData.tp_data[refTP].img_srs->Print(std::cout);
 
   // Extract 3D Images
@@ -3394,8 +3379,6 @@ int GreedyApproach<VDim, TReal>
     tpData.img = ExtractTimePointImage(pData.img4d, tp);
     tpData.img_srs = Resample3DImage<Image3DType>(
           tpData.img, 0.5, InterpolationMode::Linear, 1);
-
-    std::cout << "Resampling Completed" << std::endl;
 
     pData.tp_data[tp] = tpData;
     }
@@ -3662,7 +3645,8 @@ GreedyApproach<VDim, TReal>
 
   // Set mask images
   ig.fixed_mask = "mask_fixed";
-  GreedyAPI->AddCachedInputObject(ig.fixed_mask, tpdata_prev.seg_srs);
+  auto casted_mask = TimePointData<TReal>::CastLabelToDoubleImage(tpdata_prev.seg_srs);
+  GreedyAPI->AddCachedInputObject(ig.fixed_mask, casted_mask);
 
   param.metric = glparam.metric;
   param.metric_radius = glparam.metric_radius;
