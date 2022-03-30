@@ -3352,8 +3352,6 @@ int GreedyApproach<VDim, TReal>
   // Read Image 4D
   pData.img4d = ReadImageViaCache<Image4DType>(param.propagation_param.img4d);
 
-  typename Image4DType::DirectionType img4d_dir = pData.img4d->GetDirection();
-
   auto nt = pData.img4d->GetBufferedRegion().GetSize()[3];
 
   // Validate reference tp and target tps
@@ -3364,8 +3362,6 @@ int GreedyApproach<VDim, TReal>
   pData.tp_data[refTP].img = ExtractTimePointImage(pData.img4d, refTP);
   pData.tp_data[refTP].img_srs = Resample3DImage<Image3DType>(
         pData.tp_data[refTP].img,0.5, InterpolationMode::Linear, 1);
-
-  pData.tp_data[refTP].img_srs->Print(std::cout);
 
   // Extract 3D Images
   for (size_t tp : prop_param.targetTPs)
@@ -3464,6 +3460,7 @@ int GreedyApproach<VDim, TReal>
   std::sort(forward_tps.begin(), forward_tps.end());
   std::sort(backward_tps.rbegin(), backward_tps.rend());
 
+  /*
   std::cout << "forward tps: ";
   for (auto tp : forward_tps)
     std::cout << " " << tp;
@@ -3471,51 +3468,62 @@ int GreedyApproach<VDim, TReal>
   std::cout << "backward tps: ";
   for (auto tp : backward_tps)
     std::cout << " " << tp;
-  std::cout << std::endl << std::flush;
+  std::cout << std::endl;
+  */
 
   // ------------------------------------------
   //   Forward and Backward Propagation
   // ------------------------------------------
+  std::vector<std::vector<unsigned int>> tp_lists;
+  tp_lists.push_back(forward_tps);
+  tp_lists.push_back(backward_tps);
 
-
-  for (size_t i = 1; i < forward_tps.size(); ++i)
+  for (auto tp_list : tp_lists)
     {
-    const auto crntTP = forward_tps[i];
-    const auto prevTP = forward_tps[i - 1];
-    // Run affine to get transformation for reslicing
-    RunPropagationAffine(param, pData, prevTP, crntTP);
-
-    // Run deformable to get warp image for reslicing
-    RunPropagationDeformable(param, pData, prevTP, crntTP);
-
-    // Set the transformation chain
-    // -- add all <affine, -1> <deform> from reference TP to current TP
-    std::cout << "Processing transform chain..." << std::endl;
-    for (size_t j = 1; j <= i; ++j)
+    for (size_t i = 1; i < tp_list.size(); ++i)
       {
-      const auto ct = forward_tps[j];
-      const auto pt = forward_tps[j - 1];
+      const auto crntTP = tp_list[i];
+      const auto prevTP = tp_list[i - 1];
+      // Run affine to get transformation for reslicing
+      RunPropagationAffine(param, pData, prevTP, crntTP);
 
-      std::cout << "-- Adding transform for tp=" << ct << std::endl;
+      // Run deformable to get warp image for reslicing
+      RunPropagationDeformable(param, pData, prevTP, crntTP);
 
-      auto &crnt_data = pData.tp_data[ct];
-      auto &prev_data = pData.tp_data[pt];
-      auto affine = crnt_data.affine_to_prev;
-      auto deform = crnt_data.deform_from_prev;
-      // Copy previous transform specs as a starting point
-      crnt_data.transform_specs = prev_data.transform_specs;
-      TimePointTransformSpec<TReal> spec(affine, deform);
-      crnt_data.transform_specs.push_back(spec);
+      // Set the transformation chain
+      // -- add all <affine, -1> <deform> from reference TP to current TP
+      std::cout << "Processing transform chain..." << std::endl;
+      for (size_t j = 1; j <= i; ++j)
+        {
+        const auto ct = tp_list[j];
+        const auto pt = tp_list[j - 1];
+
+        auto &crnt_data = pData.tp_data[ct];
+        auto &prev_data = pData.tp_data[pt];
+        auto affine = crnt_data.affine_to_prev;
+        auto deform = crnt_data.deform_from_prev;
+        // Copy previous transform specs as a starting point
+        crnt_data.transform_specs = prev_data.transform_specs;
+        TimePointTransformSpec<TReal> spec(affine, deform);
+        crnt_data.transform_specs.push_back(spec);
+        }
+
+      // Run reslicing to warp seg_ref_srs to currrent time point
+      RunPropagationReslice(param, pData, prevTP, crntTP);
       }
-
-    // Run reslicing to warp seg_ref_srs to currrent time point
-    RunPropagationReslice(param, pData, prevTP, crntTP);
     }
-
 
   // ------------------------------------------
   //   Full Resolution Propagation
   // ------------------------------------------
+  std::sort(prop_param.targetTPs.begin(), prop_param.targetTPs.end());
+
+  std::cout << "Full Resolution Propagation Started" << std::endl;
+
+  for (unsigned int crntTP : prop_param.targetTPs)
+    {
+
+    }
 
   return 0;
 }
