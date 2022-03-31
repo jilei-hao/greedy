@@ -50,6 +50,8 @@
 #include <itkBinaryBallStructuringElement.h>
 #include <itkBinaryDilateImageFilter.h>
 #include "itkVTKImageExport.h"
+#include "itkAddImageFilter.h"
+#include "itkRegionOfInterestImageFilter.h"
 #include "vtkImageImport.h"
 #include "vtkAppendPolyData.h"
 #include "vtkDiscreteMarchingCubes.h"
@@ -3380,7 +3382,7 @@ template <typename TReal>
 typename TimePointData<TReal>::LabelImagePointer
 TimePointData<TReal>
 ::ResliceLabelImageWithIdentityMatrix(
-    LabelImageType *ref, LabelImageType *src)
+    Image3DType *ref, LabelImageType *src)
 {
   // Code adapted from c3d command -reslice-identity
 
@@ -3426,6 +3428,66 @@ TimePointData<TReal>
   fltSample->Update();
 
   return fltSample->GetOutput();
+}
+
+
+template<unsigned int VDim>
+void ExpandRegion(itk::ImageRegion<VDim> &region, const itk::Index<VDim> &idx)
+{
+  if(region.GetNumberOfPixels() == 0)
+    {
+    region.SetIndex(idx);
+    for(size_t i = 0; i < VDim; i++)
+      region.SetSize(i, 1);
+    }
+  else {
+    for(size_t i = 0; i < VDim; i++)
+      {
+      if(region.GetIndex(i) > idx[i])
+        {
+        region.SetSize(i, region.GetSize(i) + (region.GetIndex(i) - idx[i]));
+        region.SetIndex(i, idx[i]);
+        }
+      else if(region.GetIndex(i) + (long) region.GetSize(i) <= idx[i]) {
+        region.SetSize(i, 1 + idx[i] - region.GetIndex(i));
+        }
+      }
+  }
+}
+
+template<typename TReal>
+typename TimePointData<TReal>::LabelImagePointer
+TimePointData<TReal>
+::TrimLabelImage(LabelImageType *input, double vox)
+{
+  typedef LabelImageType::RegionType RegionType;
+  typedef itk::ImageRegionIteratorWithIndex<LabelImageType> Iterator;
+
+  // Initialize the bounding box
+  RegionType bbox;
+
+  // Find the extent of the non-background region of the image
+  Iterator it(input, input->GetBufferedRegion());
+  for( ; !it.IsAtEnd(); ++it)
+    if(it.Value() != 0)
+      ExpandRegion(bbox, it.GetIndex());
+
+  typename LabelImageType::SizeType radius;
+  for(size_t i = 0; i < 3; i++)
+    radius[i] = (int) ceil(vox);
+  bbox.PadByRadius(radius);
+
+  // Make sure the bounding box is within the contents of the image
+  bbox.Crop(input->GetBufferedRegion());
+
+  // Chop off the region
+  typedef itk::RegionOfInterestImageFilter<LabelImageType, LabelImageType> TrimFilter;
+  typename TrimFilter::Pointer fltTrim = TrimFilter::New();
+  fltTrim->SetInput(input);
+  fltTrim->SetRegionOfInterest(bbox);
+  fltTrim->Update();
+
+  return fltTrim->GetOutput();
 }
 
 template<typename TReal>
@@ -3652,8 +3714,6 @@ int GreedyApproach<VDim, TReal>
                             it.refseg.c_str());
       }
 
-
-
     // Thresholding
     std::cout << "-- Binarizing..." << std::endl;
     typedef itk::BinaryThresholdImageFilter<LabelImageType, LabelImageType> ThresholdFilter;
@@ -3664,7 +3724,6 @@ int GreedyApproach<VDim, TReal>
     fltThreshold->SetInsideValue(1);
     fltThreshold->SetOutsideValue(0);
     fltThreshold->Update();
-
 
 
     // Label dilation
@@ -3770,7 +3829,6 @@ int GreedyApproach<VDim, TReal>
         crnt_data.transform_specs.push_back(spec);
 
 
-
       // Get current transformations
       auto affine = crnt_data.affine_to_prev;
       auto deform = crnt_data.deform_from_prev;
@@ -3779,22 +3837,49 @@ int GreedyApproach<VDim, TReal>
       TimePointTransformSpec<TReal> spec(affine, deform);
       crnt_data.transform_specs.push_back(spec);
 
+      /*
       std::cout << "-- transformation chain for tp=" << crntTP << std::endl;
       for (auto spec : crnt_data.transform_specs)
         std::cout << "---- " << &spec << std::endl;
-
+      */
 
       // Run reslicing to warp seg_ref_srs to currrent time point
       RunPropagationReslice(param, pData, prevTP, crntTP);
       }
 
+    // Generate Full Resolution Mask for current timepoint
+    // c3d -interpolation NerestNeighbor {I(n)} {DS(n)} -reslice-identity -o {S'(n)}
 
-    // Generate Full Resolution Mask for the reference segmentation
-    // c3d -interpolation NerestNeighbor {I(r)} {DS(r)} -reslice-identity -o {S'(r)}
     std::cout << "Generating Full Resolution Reference Mask" << std::endl;
-    auto &ref_data = pData.tp_data[refTP];
-    ref_data.full_res_mask = TimePointData<TReal>::ResliceLabelImageWithIdentityMatrix(
-          ref_data.seg, ref_data.seg_srs);
+
+    typedef itk::AddImageFilter<LabelImageType, LabelImageType, LabelImageType> AddFilter;
+
+
+    // Add all full-res masks up and trim to set reference space
+    auto &cd = pData.tp_data[tp_list[1]];
+    cd.full_res_mask = TimePointData<TReal>::ResliceLabelImageWithIdentityMatrix(
+          cd.img, cd.seg_srs);
+
+    LabelImagePointer temp = cd.full_res_mask;
+
+    for (size_t i = 2; i < tp_list.size(); ++i)
+      {
+      std::cout << "-- Generating for tp=" << i << std::endl;
+      const auto crntTP = tp_list[i];
+      auto &crntdata = pData.tp_data[crntTP];
+      crntdata.full_res_mask = TimePointData<TReal>::ResliceLabelImageWithIdentityMatrix(
+            crntdata.img, crntdata.seg_srs);
+
+      auto fltAdd = AddFilter::New();
+      fltAdd->SetInput(0, temp);
+      fltAdd->SetInput(1, crntdata.full_res_mask);
+      fltAdd->Update();
+      temp = fltAdd->GetOutput();
+      }
+
+    pData.full_res_ref_space = TimePointData<TReal>::CastLabelToDoubleImage(
+          TimePointData<TReal>::TrimLabelImage(temp, 3));
+    param.reference_space = "full_res_ref_space";
 
     std::cout << "Start Full-Res Propagation" << std::endl;
 
@@ -3802,9 +3887,10 @@ int GreedyApproach<VDim, TReal>
     for (size_t i = 1; i < tp_list.size(); ++i)
       {
       const auto crntTP = tp_list[i];
+      auto &crntdata = pData.tp_data[crntTP];
 
       // Run full res deformable registration
-      RunPropagationDeformable(param, pData, refTP, crntTP, true);
+      RunPropagationDeformable(param, pData, crntTP, refTP, true);
 
       // Run full res reslicing to warp seg_ref to current time point
       RunPropagationReslice(param, pData, refTP, crntTP, true);
@@ -3818,7 +3904,7 @@ int GreedyApproach<VDim, TReal>
 
       std::string fnout = itksys::SystemTools::JoinPath(fnout_components);
 
-      auto &crntdata = pData.tp_data[crntTP];
+
       WriteImageViaCache<LabelImageType>(crntdata.seg, fnout);
 
       std::cout << "Saved resliced segmenation to: " << fnout << std::endl;
@@ -3836,12 +3922,7 @@ int GreedyApproach<VDim, TReal>
 
       std::cout << "Saved resliced mesh to: " << fnout << std::endl;
       }
-
-
     }
-
-
-
 
   return 0;
 }
@@ -3996,10 +4077,14 @@ GreedyApproach<VDim, TReal>
   // Configure initial affine transformation
   if (isFullRes)
     {
+    // --Set reference space for full res mode
+    param.reference_space = glparam.reference_space;
+    GreedyAPI->AddCachedInputObject(param.reference_space, pData.full_res_ref_space);
+
     // Set the transformation chain
-    for (size_t i = 0; i < tpdata_mov.transform_specs.size(); ++i)
+    for (size_t i = 0; i < tpdata_fix.transform_specs.size(); ++i)
       {
-      auto &trans_spec = tpdata_mov.transform_specs[i];
+      auto &trans_spec = tpdata_fix.transform_specs[i];
 
       // -- Add affine
       // ---- Generate a unique id
@@ -4029,11 +4114,11 @@ GreedyApproach<VDim, TReal>
 
   if (isFullRes)
     {
-    tpdata_mov.deform_to_ref = LDDMM3DType::new_vimg(tpdata_mov.img);
-    GreedyAPI->AddCachedOutputObject(param.output, tpdata_mov.deform_to_ref);
+    tpdata_fix.deform_to_ref = LDDMM3DType::new_vimg(tpdata_fix.img);
+    GreedyAPI->AddCachedOutputObject(param.output, tpdata_fix.deform_to_ref);
 
-    tpdata_mov.deform_from_ref = LDDMM3DType::new_vimg(tpdata_mov.img);
-    GreedyAPI->AddCachedOutputObject(param.inverse_warp, tpdata_mov.deform_from_ref);
+    tpdata_fix.deform_from_ref = LDDMM3DType::new_vimg(tpdata_fix.img);
+    GreedyAPI->AddCachedOutputObject(param.inverse_warp, tpdata_fix.deform_from_ref);
     }
   else
     {

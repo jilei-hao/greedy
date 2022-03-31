@@ -133,9 +133,11 @@ struct TimePointData
   }
 
   static LabelImagePointer ResliceLabelImageWithIdentityMatrix(
-      LabelImageType *ref, LabelImageType *src);
+      Image3DType *ref, LabelImageType *src);
 
   static MeshPointer GetMeshFromLabelImage(LabelImageType *img);
+
+  static LabelImagePointer TrimLabelImage(LabelImageType *input, double vox);
 
   Image3DPointer img;
   Image3DPointer img_srs;
@@ -158,12 +160,16 @@ struct PropagationData
 {
   typedef itk::Image<TReal, 4u> Image4DType;
   typedef typename Image4DType::Pointer Image4DPointer;
+  typedef itk::Image<TReal, 3u> Image3DType;
+  typedef typename Image3DType::Pointer Image3DPointer;
 
   Image4DPointer img4d;
   // Only store data for current output list
   std::map<unsigned int, TimePointData<TReal>> tp_data;
   std::vector<PropagationSegGroup<TReal>> seg_list;
   std::vector<PropagationMeshGroup> mesh_list;
+  Image3DPointer full_res_ref_space;
+
 };
 
 /**
