@@ -49,6 +49,14 @@
 #include <itkLinearInterpolateImageFunction.h>
 #include <itkBinaryBallStructuringElement.h>
 #include <itkBinaryDilateImageFilter.h>
+#include "itkVTKImageExport.h"
+#include "vtkImageImport.h"
+#include "vtkAppendPolyData.h"
+#include "vtkDiscreteMarchingCubes.h"
+#include "vtkShortArray.h"
+#include "vtkPointData.h"
+#include "vtkTransformPolyDataFilter.h"
+#include "vtkTransform.h"
 
 #include "ImageRegionConstIteratorWithIndexOverride.h"
 
@@ -418,6 +426,39 @@ GreedyApproach<VDim, TReal>
 
   itk::SmartPointer<TImage> pointer = reader->GetOutput();
   return pointer;
+}
+
+template <unsigned int VDim, typename TReal>
+vtkSmartPointer<vtkPolyData>
+GreedyApproach<VDim, TReal>
+::ReadPolyDataViaCache(const std::string &filename)
+{
+  // Check the cache for the presence of the image
+  auto it = m_PolyDataCache.find(filename);
+  if(it != m_PolyDataCache.end())
+    return it->second.target;
+
+  return ReadPolyData(filename.c_str());
+}
+
+template <unsigned int VDim, typename TReal>
+void
+GreedyApproach<VDim, TReal>
+::WritePolyDataViaCache(vtkPolyData *mesh, const std::string &filename)
+{
+  // Check the cache for the presence of the image
+  auto it = m_PolyDataCache.find(filename);
+  if(it != m_PolyDataCache.end())
+    {
+    vtkPolyData *cached = it->second.target;
+
+    cached->DeepCopy(mesh);
+    }
+
+  if(it == m_PolyDataCache.end() || it->second.force_write)
+    {
+    WritePolyData(mesh, filename.c_str());
+    }
 }
 
 template <unsigned int VDim, typename TReal>
@@ -2660,7 +2701,7 @@ int GreedyApproach<VDim, TReal>
   typedef vtkSmartPointer<vtkPolyData> MeshPointer;
   std::vector<MeshPointer> meshes;
   for(unsigned int i = 0; i < r_param.meshes.size(); i++)
-    meshes.push_back(ReadPolyData(r_param.meshes[i].fixed.c_str()));
+    meshes.push_back(ReadPolyDataViaCache(r_param.meshes[i].fixed.c_str()));
 
   // Read the transform chain
   VectorImagePointer warp;
@@ -2807,7 +2848,7 @@ int GreedyApproach<VDim, TReal>
 
   // Save the meshes
   for(unsigned int i = 0; i < r_param.meshes.size(); i++)
-    WritePolyData(meshes[i], r_param.meshes[i].output.c_str());
+    WritePolyDataViaCache(meshes[i], r_param.meshes[i].output.c_str());
 
 
   // Process meshes
@@ -3387,12 +3428,13 @@ TimePointData<TReal>
   return fltSample->GetOutput();
 }
 
-#include "itkVTKImageExport.h"
-#include "vtkImageImport.h"
-#include "vtkAppendPolyData.h"
-#include "vtkDiscreteMarchingCubes.h"
-#include "vtkShortArray.h"
-#include "vtkPointData.h"
+template<typename TReal>
+TimePointData<TReal>
+::TimePointData()
+{
+  affine_to_prev = TransformType::New();
+  mesh = vtkPolyData::New();
+}
 
 template<class TImage>
 void ConnectITKToVTK(itk::VTKImageExport<TImage> *fltExport,vtkImageImport *fltImport)
@@ -3409,6 +3451,57 @@ void ConnectITKToVTK(itk::VTKImageExport<TImage> *fltExport,vtkImageImport *fltI
   fltImport->SetDataExtentCallback( fltExport->GetDataExtentCallback());
   fltImport->SetBufferPointerCallback( fltExport->GetBufferPointerCallback());
   fltImport->SetCallbackUserData( fltExport->GetCallbackUserData());
+}
+
+/**
+ * This static function constructs a NIFTI matrix from the ITK direction
+ * cosines matrix and Spacing and Origin vectors
+ */
+inline vnl_matrix_fixed<double,4,4> ConstructNiftiSform(
+  vnl_matrix<double> m_dir,
+  vnl_vector<double> v_origin,
+  vnl_vector<double> v_spacing)
+{
+  // Set the NIFTI/RAS transform
+  vnl_matrix<double> m_ras_matrix;
+  vnl_diag_matrix<double> m_scale, m_lps_to_ras;
+  vnl_vector<double> v_ras_offset;
+
+  // Compute the matrix
+  m_scale.set(v_spacing);
+  m_lps_to_ras.set(vnl_vector<double>(3, 1.0));
+  m_lps_to_ras[0] = -1;
+  m_lps_to_ras[1] = -1;
+  m_ras_matrix = m_lps_to_ras * m_dir * m_scale;
+
+  // Compute the vector
+  v_ras_offset = m_lps_to_ras * v_origin;
+
+  // Create the larger matrix
+  vnl_vector<double> vcol(4, 1.0);
+  vcol.update(v_ras_offset);
+
+  vnl_matrix_fixed<double,4,4> m_sform;
+  m_sform.set_identity();
+  m_sform.update(m_ras_matrix);
+  m_sform.set_column(3, vcol);
+  return m_sform;
+}
+
+inline vnl_matrix_fixed<double,4,4> ConstructVTKtoNiftiTransform(
+  vnl_matrix<double> m_dir,
+  vnl_vector<double> v_origin,
+  vnl_vector<double> v_spacing)
+{
+  vnl_matrix_fixed<double,4,4> vox2nii = ConstructNiftiSform(m_dir, v_origin, v_spacing);
+  vnl_matrix_fixed<double,4,4> vtk2vox;
+  vtk2vox.set_identity();
+  for(size_t i = 0; i < 3; i++)
+    {
+    vtk2vox(i,i) = 1.0 / v_spacing[i];
+    vtk2vox(i,3) = - v_origin[i] / v_spacing[i];
+    }
+  return vox2nii * vtk2vox;
 }
 
 template <typename TReal>
@@ -3457,17 +3550,37 @@ TimePointData<TReal>
     // Set scalar values for the label
     vtkShortArray *scalar = vtkShortArray::New();
     scalar->SetNumberOfComponents(1);
-    for (vtkIdType i = 0; i < labelMesh->GetNumberOfPoints(); ++i)
-      {
-      scalar->InsertNextTuple1(i);
-      }
+    scalar->SetNumberOfTuples(labelMesh->GetNumberOfPoints());
+    scalar->Fill(i);
     scalar->SetName("Label");
     labelMesh->GetPointData()->SetScalars(scalar);
     fltAppend->AddInputData(labelMesh);
     }
 
   fltAppend->Update();
-  return fltAppend->GetOutput();
+
+  // Compute the transform from VTK coordinates to NIFTI/RAS coordinates
+  // Create the transform filter
+  vtkTransformPolyDataFilter *fltTransform = vtkTransformPolyDataFilter::New();
+  fltTransform->SetInputData(fltAppend->GetOutput());
+
+  typedef vnl_matrix_fixed<double, 4, 4> Mat44;
+  Mat44 vtk2out;
+  Mat44 vtk2nii = ConstructVTKtoNiftiTransform(
+    img->GetDirection().GetVnlMatrix().as_ref(),
+    img->GetOrigin().GetVnlVector(),
+    img->GetSpacing().GetVnlVector());
+
+  vtk2out = vtk2nii;
+
+  // Update the VTK transform to match
+  vtkTransform *transform = vtkTransform::New();
+  transform->SetMatrix(vtk2out.data_block());
+  fltTransform->SetTransform(transform);
+  fltTransform->Update();
+
+  // Get final output
+  return fltTransform->GetOutput();
 }
 
 template <unsigned int VDim, typename TReal>
@@ -3530,11 +3643,19 @@ int GreedyApproach<VDim, TReal>
 
     if (img_direction != seg_direction)
       {
-      throw GreedyException("Image and Segmentation orientations do not match. Segmentation file %s",
+      std::cerr << "Image Direction: " << std::endl;
+      std::cerr << img_direction << std::endl;
+      std::cerr << "Segmentation Direction: " << std::endl;
+      std::cerr << seg_direction << std::endl;
+
+      throw GreedyException("Image and Segmentation orientations do not match. Segmentation file %s\n",
                             it.refseg.c_str());
       }
 
+
+
     // Thresholding
+    std::cout << "-- Binarizing..." << std::endl;
     typedef itk::BinaryThresholdImageFilter<LabelImageType, LabelImageType> ThresholdFilter;
     typename ThresholdFilter::Pointer fltThreshold = ThresholdFilter::New();
     fltThreshold->SetInput(segGroup.seg_ref);
@@ -3544,7 +3665,10 @@ int GreedyApproach<VDim, TReal>
     fltThreshold->SetOutsideValue(0);
     fltThreshold->Update();
 
+
+
     // Label dilation
+    std::cout << "-- Dilating..." << std::endl;
     typedef itk::BinaryBallStructuringElement<TReal, 3u> Element;
     typename Element::SizeType sz = { 10, 10, 10 };
     Element elt;
@@ -3559,9 +3683,17 @@ int GreedyApproach<VDim, TReal>
     fltDilation->Update();
 
     // Resampling
+    std::cout << "-- Resampling..." << std::endl;
     segGroup.seg_ref_srs =
         Resample3DImage<LabelImageType>(
           fltDilation->GetOutput(), 0.5, InterpolationMode::NearestNeighbor);
+
+    // Generating mesh data
+    std::cout << "-- Generating Mesh..." << std::endl;
+    segGroup.mesh_ref = TimePointData<TReal>::GetMeshFromLabelImage(segGroup.seg_ref);
+
+    std::string fnmesh = segGroup.outdir + "mesh_tp_" + std::to_string(refTP) + ".vtk";
+    WritePolyDataViaCache(segGroup.mesh_ref, fnmesh);
 
     pData.seg_list.push_back(segGroup);
     }
@@ -3570,6 +3702,7 @@ int GreedyApproach<VDim, TReal>
   // -- The rest of the seg inputs only participate in warping
   pData.tp_data[refTP].seg = pData.seg_list[0].seg_ref;
   pData.tp_data[refTP].seg_srs = pData.seg_list[0].seg_ref_srs;
+  pData.tp_data[refTP].mesh = pData.seg_list[0].mesh_ref;
 
   /*
   // Debug: write out extracted tp images
@@ -3633,7 +3766,10 @@ int GreedyApproach<VDim, TReal>
       auto &prev_data = pData.tp_data[prevTP];
 
       // Copy previous transform specs as a starting point
-      crnt_data.transform_specs = prev_data.transform_specs;
+      for (auto spec : prev_data.transform_specs)
+        crnt_data.transform_specs.push_back(spec);
+
+
 
       // Get current transformations
       auto affine = crnt_data.affine_to_prev;
@@ -3642,6 +3778,10 @@ int GreedyApproach<VDim, TReal>
       // Build spec and append to existing list
       TimePointTransformSpec<TReal> spec(affine, deform);
       crnt_data.transform_specs.push_back(spec);
+
+      std::cout << "-- transformation chain for tp=" << crntTP << std::endl;
+      for (auto spec : crnt_data.transform_specs)
+        std::cout << "---- " << &spec << std::endl;
 
 
       // Run reslicing to warp seg_ref_srs to currrent time point
@@ -3682,6 +3822,19 @@ int GreedyApproach<VDim, TReal>
       WriteImageViaCache<LabelImageType>(crntdata.seg, fnout);
 
       std::cout << "Saved resliced segmenation to: " << fnout << std::endl;
+
+      // Run mesh reslicing
+      RunPropagationMeshReslice(param, pData, refTP, crntTP);
+
+      fnout_components.clear();
+      fnout_components.push_back(pData.seg_list[0].outdir);
+      fnout_components.push_back("mesh_resliced_tp_" + std::to_string(crntTP) + ".vtk");
+
+      fnout = itksys::SystemTools::JoinPath(fnout_components);
+
+      WritePolyDataViaCache(crntdata.mesh, fnout);
+
+      std::cout << "Saved resliced mesh to: " << fnout << std::endl;
       }
 
 
@@ -3743,6 +3896,7 @@ GreedyApproach<VDim, TReal>
   param.affine_dof = GreedyParameters::DOF_RIGID;
   param.iter_per_level = glparam.iter_per_level;
   param.affine_init_mode = AffineInitMode::RAS_IDENTITY;
+  param.threads = glparam.threads;
 
   // Check smoothing parameters. If greedy default detected, change to propagation default.
   SmoothingParameters default_pre = { 1.7320508076, false }, prop_default_pre = { 3.0, true };
@@ -3831,6 +3985,7 @@ GreedyApproach<VDim, TReal>
   param.metric = glparam.metric;
   param.metric_radius = glparam.metric_radius;
   param.iter_per_level = glparam.iter_per_level;
+  param.threads = glparam.threads;
 
   // Check smoothing parameters. If greedy default detected, change to propagation default.
   SmoothingParameters default_pre = { 1.7320508076, false }, prop_default_pre = { 3.0, true };
@@ -3925,6 +4080,7 @@ GreedyApproach<VDim, TReal>
 
   // Set images
   param.dim = 3;
+  param.threads = glparam.threads;
   param.reslice_param.ref_image = "img_ref";
 
   // -- Set ref image
@@ -4017,6 +4173,91 @@ GreedyApproach<VDim, TReal>
 }
 
 template <unsigned int VDim, typename TReal>
+void
+GreedyApproach<VDim, TReal>
+::RunPropagationMeshReslice(GreedyParameters &glparam, PropagationData<TReal> &pData
+                                   ,unsigned int tp_mov, unsigned int tp_ref)
+{
+  /*
+   * greedy -d 3 -threads <THR> -rf {I(n)} -r [WM:r-n] [DW:r-n] -rs {M(r)} {M(n)}
+  */
+
+  std::cout << "Propagation Mesh Reslice Run. tp_mov=" << tp_mov << "; tp_ref="
+            << tp_ref << std::endl;
+
+  typedef TimePointData<TReal> TPDataType;
+
+  // Get relevant tp data
+  TPDataType &tpdata_mov = pData.tp_data[glparam.propagation_param.refTP];
+  TPDataType &tpdata_ref = pData.tp_data[tp_ref];
+
+  // Set greedy parameters
+  GreedyParameters param;
+  GreedyApproach<3u, TReal> *GreedyAPI = new GreedyApproach<3u, TReal>();
+
+  // Set inputs
+  param.dim = 3;
+  param.threads = glparam.threads;
+  param.reslice_param.ref_image = "img_ref";
+
+  // -- Set ref image
+  GreedyAPI->AddCachedInputObject(param.reslice_param.ref_image, tpdata_ref.img.GetPointer());
+
+  std::cout << "-- ref image set" << std::endl;
+
+  // -- Set meshes
+  std::string id_mov = "mesh_fixed", id_out = "mesh_out";
+
+  ResliceMeshSpec rms;
+  rms.fixed = id_mov;
+  rms.output = id_out;
+  param.reslice_param.meshes.push_back(rms);
+
+  GreedyAPI->AddCachedInputObject(id_mov, tpdata_mov.mesh);
+  GreedyAPI->AddCachedInputObject(id_out, tpdata_ref.mesh);
+
+  std::map<std::string, itk::Object*> trans_spec_map;
+
+  // Set the transformation chain in reverse order
+  for (int i = tpdata_ref.transform_specs.size() - 1; i >= 0; --i)
+    {
+    auto &trans_spec = tpdata_ref.transform_specs[i];
+
+    // -- Add affine
+    // ---- Generate a unique id
+    std::ostringstream oss;
+    oss << "trans_" << i << "affine";
+    std::string affine_id = oss.str();
+
+    // ---- Save to map
+    trans_spec_map[affine_id] = trans_spec.affine;
+
+    // ---- Push to parameter
+    param.reslice_param.transforms.push_back(TransformSpec(affine_id));
+
+    // ---- Add object to API cache
+    GreedyAPI->AddCachedInputObject(affine_id, trans_spec.affine.GetPointer());
+    }
+
+  // Append deformation field
+  std::string deform_id = "trans_mesh_deform";
+
+  // Add to map
+  trans_spec_map[deform_id] = tpdata_ref.deform_from_ref;
+
+  // Push to parameter
+  param.reslice_param.transforms.push_back(TransformSpec(deform_id));
+
+  // Add object to the API Cache
+  GreedyAPI->AddCachedInputObject(deform_id, tpdata_ref.deform_from_ref.GetPointer());
+
+  int ret = GreedyAPI->RunReslice(param);
+
+  std::cout << "-- Mesh Reslicing Completed: ret=" << ret << std::endl;
+  delete GreedyAPI;
+}
+
+template <unsigned int VDim, typename TReal>
 typename GreedyApproach<VDim, TReal>::Image3DPointer
 GreedyApproach<VDim, TReal>
 ::ExtractTimePointImage(Image4DType *img4d, unsigned int tp)
@@ -4059,8 +4300,6 @@ GreedyApproach<VDim, TReal>
         img4d->GetBufferPointer() + bytes_per_volume * (tp - 1),
         bytes_per_volume);
 
-  //img3d->Print(std::cout);
-
   return img3d;
 }
 
@@ -4076,11 +4315,28 @@ void GreedyApproach<VDim, TReal>
 
 template <unsigned int VDim, typename TReal>
 void GreedyApproach<VDim, TReal>
+::AddCachedInputObject(std::string key, vtkPolyData *object)
+{
+  m_PolyDataCache[key].target = object;
+  m_PolyDataCache[key].force_write = false;
+}
+
+template <unsigned int VDim, typename TReal>
+void GreedyApproach<VDim, TReal>
 ::AddCachedOutputObject(std::string key, itk::Object *object, bool force_write)
 {
   m_ImageCache[key].target = object;
   m_ImageCache[key].force_write = force_write;
 }
+
+template <unsigned int VDim, typename TReal>
+void GreedyApproach<VDim, TReal>
+::AddCachedOutputObject(std::string key, vtkPolyData *object, bool force_write)
+{
+  m_PolyDataCache[key].target = object;
+  m_PolyDataCache[key].force_write = force_write;
+}
+
 
 template <unsigned int VDim, typename TReal>
 const typename GreedyApproach<VDim,TReal>::MetricLogType &

@@ -57,9 +57,11 @@ struct PropagationSegGroup
   typedef typename Image3DType::Pointer Image3DPointer;
   typedef itk::Image<short, 3u> LabelImageType;
   typedef typename LabelImageType::Pointer LabelImagePointer;
+  typedef vtkSmartPointer<vtkPolyData> MeshPointer;
 
   LabelImagePointer seg_ref;
   LabelImagePointer seg_ref_srs;
+  MeshPointer mesh_ref;
   std::string outdir;
 };
 
@@ -101,10 +103,7 @@ struct TimePointData
   typedef itk::MatrixOffsetTransformBase<double, 3u, 3u> TransformType;
   typedef vtkSmartPointer<vtkPolyData> MeshPointer;
 
-  TimePointData()
-  {
-    affine_to_prev = TransformType::New();
-  }
+  TimePointData();
 
   // This method is to convert label image to double image
   // so the the image can be read as fixed mask
@@ -269,6 +268,8 @@ public:
    */
   void AddCachedInputObject(std::string key, itk::Object *object);
 
+  void AddCachedInputObject(std::string key, vtkPolyData *object);
+
   /**
    * Add an image/matrix to the output cache. This has the same behavior as
    * the input cache, but there is an additional flag as to whether you want
@@ -277,6 +278,8 @@ public:
    * the cache and write it to a filename specified in the key
    */
   void AddCachedOutputObject(std::string key, itk::Object *object, bool force_write = false);
+
+  void AddCachedOutputObject(std::string key, vtkPolyData *object, bool force_write = false);
 
   /**
    * Get the metric log - values of metric per level. Can be called from
@@ -384,6 +387,14 @@ protected:
   typedef std::map<std::string, CacheEntry> ImageCache;
   ImageCache m_ImageCache;
 
+  struct PolyDataCacheEntry {
+    vtkSmartPointer<vtkPolyData> target;
+    bool force_write;
+  };
+
+  typedef std::map<std::string, PolyDataCacheEntry> PolyDataCache;
+  PolyDataCache m_PolyDataCache;
+
   // A log of metric values used during registration - so metric can be looked up
   // in the callbacks to RunAffine, etc.
   MetricLogType m_MetricLog;
@@ -407,6 +418,9 @@ protected:
   // ReadImageViaCache.
   typename ImageBaseType::Pointer ReadImageBaseViaCache(const std::string &filename);
 
+  // These functions read/write vtkPolyData object via cache, or from disk
+  vtkSmartPointer<vtkPolyData> ReadPolyDataViaCache(const std::string &filename);
+  void WritePolyDataViaCache(vtkPolyData *mesh, const std::string &filename);
 
   // Write an image using the cache
   template <class TImage>
@@ -447,6 +461,9 @@ protected:
   static void RunPropagationReslice(GreedyParameters &glparam, PropagationData<TReal> &pData
                                    ,unsigned int tp_mov, unsigned int tp_ref, bool isFullRes = false);
 
+  // Propagation reslice run
+  static void RunPropagationMeshReslice(GreedyParameters &glparam, PropagationData<TReal> &pData
+                                   ,unsigned int tp_mov, unsigned int tp_ref);
 
   // friend class PureAffineCostFunction<VDim, TReal>;
 
