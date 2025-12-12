@@ -73,3 +73,70 @@ Configures the verbosity of the greedy registrations. Default is `1`
 
 ### Debugging Parameters `-dump-pyramid` and `-dump-metric`
 Flags control debugging files dumping in greedy.
+
+---
+
+## Python API
+
+The Propagation tool is available through the `picsl_greedy` Python module.
+
+### Installation
+
+```bash
+# Build with Python wrapping enabled
+cd /path/to/greedy/build
+cmake -DGREEDY_BUILD_WRAPPING=ON -DGREEDY_BUILD_LMSHOOT=ON \
+      -DITK_DIR=/path/to/ITK -DVTK_DIR=/path/to/VTK \
+      -DEigen3_DIR=/path/to/eigen3 ..
+cmake --build . --target picsl_greedy
+
+# Add to Python path
+export PYTHONPATH=/path/to/greedy/build:$PYTHONPATH
+```
+
+### Basic Usage
+
+```python
+from picsl_greedy import Propagation
+
+# Create propagation instance
+prop = Propagation()
+
+# Run with file paths (same as CLI)
+prop.run(
+    "-i /path/to/image4d.nii.gz "
+    "-sr3 /path/to/segmentation.nii.gz "
+    "-tpr 5 "
+    "-tpt 1,2,3,4,6,7,8,9 "
+    "-o /path/to/output "
+    "-threads 8"
+)
+```
+
+### Using SimpleITK Images
+
+Pass images directly without intermediate file I/O:
+
+```python
+import SimpleITK as sitk
+from picsl_greedy import Propagation
+
+# Load images with SimpleITK
+img4d = sitk.ReadImage("/path/to/image4d.nii.gz")
+seg3d = sitk.ReadImage("/path/to/segmentation.nii.gz")
+
+# Pass images as kwargs (no -i or -sr3 needed)
+prop = Propagation()
+prop.run(
+    "-tpr 5 -tpt 1,2,3,4 -o /path/to/output",
+    img4d=img4d,
+    seg3d=seg3d
+)
+
+# Retrieve output segmentations as SimpleITK images
+seg4d_output = prop["seg4d"]      # Full 4D segmentation
+seg_tp1 = prop["seg_1"]           # 3D segmentation for timepoint 1
+
+# Get list of processed timepoints
+timepoints = prop.get_time_points()
+```

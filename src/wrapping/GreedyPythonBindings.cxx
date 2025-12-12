@@ -38,6 +38,7 @@
 #include <PropagationAPI.h>
 #include <PropagationParameters.hxx>
 #include <PropagationInputBuilder.h>
+#include <PropagationIO.h>
 
 namespace py=pybind11;
 
@@ -500,27 +501,125 @@ public:
   using PropagationParametersType = propagation::PropagationParameters;
   using PropagationInputBuilderType = propagation::PropagationInputBuilder<TReal>;
   using PropagationAPIType = propagation::PropagationAPI<TReal>;
+  using PropagationOutputType = propagation::PropagationOutput<TReal>;
   using MeshSpec = propagation::MeshSpec;
 
+  // Image types matching PropagationAPI
+  using TImage4D = itk::Image<TReal, 4>;
+  using TLabelImage3D = itk::Image<short, 3>;
+  using TLabelImage4D = itk::Image<short, 4>;
+
   void Run(
-    const string &cmd, py::object sout, py::object serr)
+    const string &cmd, py::object sout, py::object serr, const py::kwargs& kwargs)
   {
     // Redirect the outputs if needed
     py::scoped_ostream_redirect r_out(std::cout, sout);
     py::scoped_ostream_redirect r_err(std::cerr, serr);
+
+    // Cache input images from kwargs
+    for(auto it : kwargs)
+      SetCachedImage(it.first.cast<std::string>(), it.second.cast<py::object>());
 
     // Parse the command line
     PropagationParametersType pParam;
     GreedyParameters gParam;
     ParseCommandLine(cmd, pParam, gParam);
 
-    // Build and run propagation
+    // Build propagation input
     PropagationInputBuilderType builder;
-    builder.ConfigForCLI(pParam, gParam);
+
+    // If images are cached, use API-style configuration
+    if(m_Image4D.IsNotNull() || m_RefSeg3D.IsNotNull() || m_RefSeg4D.IsNotNull())
+    {
+      // Set parameters from command line
+      builder.SetPropagationParameters(pParam);
+      builder.SetGreedyParameters(gParam);
+
+      // Override with cached images
+      if(m_Image4D.IsNotNull())
+        builder.SetImage4D(m_Image4D);
+      if(m_RefSeg3D.IsNotNull())
+        builder.SetReferenceSegmentationIn3D(m_RefSeg3D);
+      if(m_RefSeg4D.IsNotNull())
+        builder.SetReferenceSegmentationIn4D(m_RefSeg4D);
+    }
+    else
+    {
+      // Use CLI-style configuration (reads files)
+      builder.ConfigForCLI(pParam, gParam);
+    }
+
     auto pInput = builder.BuildPropagationInput();
-    
+
     PropagationAPIType api(pInput);
     api.Run();
+
+    // Cache output for retrieval
+    m_Output = api.GetOutput();
+  }
+
+  py::object GetCachedImage(std::string label)
+  {
+    if(!m_Output || !m_Output->IsInitialized())
+      return py::none();
+
+    // Get 4D segmentation output
+    if(label == "seg4d")
+    {
+      auto seg4d = m_Output->GetSegmentation4D();
+      if(seg4d.IsNotNull())
+        return ImageExport<TLabelImage4D>(seg4d).sitk_image;
+    }
+    // Get 3D segmentation for specific timepoint (e.g., "seg_01", "seg_02")
+    else if(label.rfind("seg_", 0) == 0)
+    {
+      try {
+        unsigned int tp = std::stoi(label.substr(4));
+        auto seg3d = m_Output->GetSegmentation3D(tp);
+        if(seg3d.IsNotNull())
+          return ImageExport<TLabelImage3D>(seg3d).sitk_image;
+      } catch(...) {}
+    }
+
+    return py::none();
+  }
+
+  void SetCachedImage(std::string label, py::object object)
+  {
+    py::object sitk = py::module_::import("SimpleITK");
+
+    if(object.is_none())
+      return;
+
+    if(!py::isinstance(object, sitk.attr("Image")))
+      throw std::runtime_error("Input must be a SimpleITK image");
+
+    if(label == "img4d")
+    {
+      ImageImport<TImage4D> import(object);
+      m_Image4D = import.GetImage();
+    }
+    else if(label == "seg3d")
+    {
+      ImageImport<TLabelImage3D> import(object);
+      m_RefSeg3D = import.GetImage();
+    }
+    else if(label == "seg4d")
+    {
+      ImageImport<TLabelImage4D> import(object);
+      m_RefSeg4D = import.GetImage();
+    }
+  }
+
+  py::list GetTimePoints()
+  {
+    py::list result;
+    if(m_Output && m_Output->IsInitialized())
+    {
+      for(auto tp : m_Output->GetTimePointList())
+        result.append(tp);
+    }
+    return result;
   }
 
 private:
@@ -603,6 +702,14 @@ private:
         throw GreedyException("Unknown parameter: %s", arg.c_str());
     }
   }
+
+  // Cached input images
+  typename TImage4D::Pointer m_Image4D;
+  typename TLabelImage3D::Pointer m_RefSeg3D;
+  typename TLabelImage4D::Pointer m_RefSeg4D;
+
+  // Cached output
+  std::shared_ptr<PropagationOutputType> m_Output;
 };
 
 
@@ -620,6 +727,9 @@ void instantiate_propagation(py::handle m, const char *name)
          py::arg("command"),
          py::arg("out") = py::module_::import("sys").attr("stdout"),
          py::arg("err") = py::module_::import("sys").attr("stdout"))
+    .def("__getitem__", &API::GetCachedImage)
+    .def("__setitem__", &API::SetCachedImage)
+    .def("get_time_points", &API::GetTimePoints)
     ;
 }
 
