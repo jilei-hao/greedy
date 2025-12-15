@@ -266,7 +266,7 @@ SET(PROPAGATION_SRC
 
 # List of installable targets
 SET(GREEDY_INSTALL_BIN_TARGETS greedy greedy_template_average multi_chunk_greedy greedy_propagation)
-SET(GREEDY_INSTALL_LIB_TARGETS greedyapi multichunkgreedyapi)
+SET(GREEDY_INSTALL_LIB_TARGETS greedyapi multichunkgreedyapi propagationapi)
 
 
 # The executables are only compiled when the software is built as its own project
