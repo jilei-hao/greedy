@@ -92,7 +92,12 @@ public:
   const PropagationParameters &GetConstPropagationParameters() const
   { return m_PParam; }
 
-  // Parse the parameters, read data, configure this builder and build an input
+  /** Set whether to use 4D segmentation input */
+  void SetUse4DSegInput(bool use4D);
+
+  // Parse the parameters, read data, configure this builder and build an input.
+  // If images are already set via SetImage4D, SetReferenceSegmentationIn3D, etc.,
+  // those will be preserved and not overwritten by file reads.
   void ConfigForCLI(const PropagationParameters &pParam, const GreedyParameters &gParam);
 
   // Actual method to build the input

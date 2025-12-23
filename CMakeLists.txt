@@ -266,7 +266,7 @@ SET(PROPAGATION_SRC
 
 # List of installable targets
 SET(GREEDY_INSTALL_BIN_TARGETS greedy greedy_template_average multi_chunk_greedy greedy_propagation)
-SET(GREEDY_INSTALL_LIB_TARGETS greedyapi multichunkgreedyapi)
+SET(GREEDY_INSTALL_LIB_TARGETS greedyapi multichunkgreedyapi propagationapi)
 
 
 # The executables are only compiled when the software is built as its own project
@@ -350,7 +350,7 @@ IF(INSTALL_CLI)
 
   IF(NOT GREEDY_BUILD_AS_SUBPROJECT)
     INSTALL(TARGETS ${GREEDY_INSTALL_LIB_TARGETS} DESTINATION lib EXPORT GreedyTargets)
-    FILE(GLOB_RECURSE GREEDY_HEADER_FILES "${GREEDY_SOURCE_DIR}/src/*.h" "${GREEDY_SOURCE_DIR}/src/*.txx")
+    FILE(GLOB_RECURSE GREEDY_HEADER_FILES "${GREEDY_SOURCE_DIR}/src/*.h" "${GREEDY_SOURCE_DIR}/src/*.hxx" "${GREEDY_SOURCE_DIR}/src/*.txx")
     INSTALL(FILES ${GREEDY_HEADER_FILES} DESTINATION include)
 
     IF(GREEDY_BUILD_LMSHOOT)

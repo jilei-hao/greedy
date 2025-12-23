@@ -252,37 +252,62 @@ PropagationInputBuilder<TReal>
 template<typename TReal>
 void
 PropagationInputBuilder<TReal>
+::SetUse4DSegInput(bool use4D)
+{
+  m_PParam.use4DSegInput = use4D;
+}
+
+template<typename TReal>
+void
+PropagationInputBuilder<TReal>
 ::ConfigForCLI(const PropagationParameters &pParam, const GreedyParameters &gParam)
 {
   // Copy the parameters, this will cover all settings not related to data reading
   this->SetPropagationParameters(pParam);
   this->SetGreedyParameters(gParam);
 
-  // Read the data
-  this->SetImage4D(PropagationTools<TReal>::template ReadImage<TImage4D>(pParam.fn_img4d));
+  // Read the 4D image only if not already set (e.g., from cached Python input)
+  if (!m_Data->img4d)
+  {
+    this->SetImage4D(PropagationTools<TReal>::template ReadImage<TImage4D>(pParam.fn_img4d));
+  }
 
-  // Read Segmentation Image from the parameter
+  // Read Segmentation Image from the parameter only if not already set
   if (pParam.use4DSegInput)
+  {
+    if (!m_Data->seg4d_in)
     {
-    this->SetReferenceSegmentationIn4D(PropagationTools<TReal>
-        ::template ReadImage<TLabelImage4D>(pParam.fn_seg4d));
+      this->SetReferenceSegmentationIn4D(PropagationTools<TReal>
+          ::template ReadImage<TLabelImage4D>(pParam.fn_seg4d));
     }
+  }
   else
+  {
+    if (!m_Data->seg_ref)
     {
-    this->SetReferenceSegmentationIn3D(PropagationTools<TReal>
-        ::template ReadImage<TLabelImage3D>(pParam.fn_seg3d));
+      this->SetReferenceSegmentationIn3D(PropagationTools<TReal>
+          ::template ReadImage<TLabelImage3D>(pParam.fn_seg3d));
     }
+  }
 
-  // Read extra meshes
+  // Read extra meshes that aren't already cached
   for (auto &meshspec : pParam.extra_mesh_list)
-    {
+  {
+    // Skip meshes that are already marked as cached
+    if (meshspec.cached)
+      continue;
+
+    // Skip if mesh is already in the cache
+    if (m_Data->extra_mesh_cache.count(meshspec.fnout_pattern) > 0)
+      continue;
+
     auto meshData = ReadMesh(meshspec.fn_mesh.c_str());
     auto *pd = dynamic_cast<vtkPolyData *>(meshData.GetPointer());
     if (!pd)
       throw GreedyException("Propagation: Extra mesh %s is not a vtkPolyData", meshspec.fn_mesh.c_str());
     
     this->AddExtraMeshToWarp(pd, meshspec.fnout_pattern);
-    }
+  }
 }
 
 template<typename TReal>
