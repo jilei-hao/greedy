@@ -97,6 +97,10 @@ MultiComponentImageMetricBase<TMetricTraits>
 
   // Set the moving image RR to maximum
   this->GetMovingImage()->SetRequestedRegionToLargestPossibleRegion();
+
+  // Set the moving mask image RR to maximum if present
+  if(this->GetMovingMaskImage())
+    this->GetMovingMaskImage()->SetRequestedRegionToLargestPossibleRegion();
 }
 
 
