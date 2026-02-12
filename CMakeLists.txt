@@ -58,6 +58,9 @@ OPTION(GREEDY_USE_SPARSE_SOLVERS "Build registration tools that use sparse solve
 # Do we want to build the landmark geodesic shooting registration code?
 OPTION(GREEDY_BUILD_LMSHOOT "Build landmark geodesic shooting library and tools" OFF)
 
+# Do we want to build the python wrapping code?
+OPTION(GREEDY_BUILD_WRAPPING "Build wrapping code for Python" OFF)
+
 #--------------------------------------------------------------------------------
 # Dependent packages
 #--------------------------------------------------------------------------------
@@ -263,7 +266,7 @@ SET(PROPAGATION_SRC
 
 # List of installable targets
 SET(GREEDY_INSTALL_BIN_TARGETS greedy greedy_template_average multi_chunk_greedy greedy_propagation)
-SET(GREEDY_INSTALL_LIB_TARGETS greedyapi multichunkgreedyapi)
+SET(GREEDY_INSTALL_LIB_TARGETS greedyapi multichunkgreedyapi propagationapi)
 
 
 # The executables are only compiled when the software is built as its own project
@@ -347,7 +350,7 @@ IF(INSTALL_CLI)
 
   IF(NOT GREEDY_BUILD_AS_SUBPROJECT)
     INSTALL(TARGETS ${GREEDY_INSTALL_LIB_TARGETS} DESTINATION lib EXPORT GreedyTargets)
-    FILE(GLOB_RECURSE GREEDY_HEADER_FILES "${GREEDY_SOURCE_DIR}/src/*.h" "${GREEDY_SOURCE_DIR}/src/*.txx")
+    FILE(GLOB_RECURSE GREEDY_HEADER_FILES "${GREEDY_SOURCE_DIR}/src/*.h" "${GREEDY_SOURCE_DIR}/src/*.hxx" "${GREEDY_SOURCE_DIR}/src/*.txx")
     INSTALL(FILES ${GREEDY_HEADER_FILES} DESTINATION include)
 
     IF(GREEDY_BUILD_LMSHOOT)
@@ -459,3 +462,17 @@ IF(NOT GREEDY_BUILD_AS_SUBPROJECT)
   ENDIF()
 
 ENDIF(NOT GREEDY_BUILD_AS_SUBPROJECT)
+
+# Stuff for python wrapping
+OPTION(GREEDY_BUILD_WRAPPING "Build greedy python wrapping" ON)
+IF(GREEDY_BUILD_WRAPPING)
+  message("Configurating Greedy Python wrapping...")
+  SET(GREEDY_BUILD_LDDMM ON CACHE BOOL "" FORCE)
+  SET(PYBIND11_FINDPYTHON ON)
+  ADD_SUBDIRECTORY(src/wrapping/external/pybind11)
+  INCLUDE_DIRECTORIES(src/wrapping/external/pybind11)
+  pybind11_add_module(picsl_greedy src/wrapping/GreedyPythonBindings.cxx)
+  TARGET_INCLUDE_DIRECTORIES(picsl_greedy PRIVATE ${Greedy_INCLUDE_DIRS} src/multichunk src/lmshoot/)
+  TARGET_LINK_LIBRARIES(picsl_greedy PUBLIC ${ITK_LIBRARIES} ${VTK_LIBRARIES} greedyapi lmshootapi multichunkgreedyapi)
+  install(TARGETS picsl_greedy DESTINATION .)
+ENDIF()
